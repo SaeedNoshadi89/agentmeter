@@ -77,11 +77,18 @@ Run `agentmeter` in any terminal. `agentmeter --json` prints the same data for s
 
 Choose one method.
 
-**Homebrew** (recommended on macOS). Add the tap once; after that it installs and upgrades like any other formula.
+**Homebrew** (recommended on macOS). Add the tap and trust it once; after that it installs and upgrades like any other formula.
 
 ```sh
 brew tap SaeedNoshadi89/tap
+brew trust --formula saeednoshadi89/tap/agentmeter
 brew install agentmeter
+```
+
+Homebrew asks you to trust formulas from taps outside its main repository, which is what the `brew trust` line does. Or install with the full name, which trusts it for you in one step:
+
+```sh
+brew install SaeedNoshadi89/tap/agentmeter
 ```
 
 **Install script.** This puts `agentmeter` in `~/.local/bin`, and also sets up the Rex popup if Rex is installed.
@@ -150,7 +157,7 @@ Updating keeps your shortcut, style and status line choices.
 ```sh
 agentmeter statusline off               # remove the Claude Code status line
 agentmeter remove-rex                   # remove the Rex popup
-brew uninstall agentmeter               # Homebrew
+brew uninstall agentmeter && brew untap SaeedNoshadi89/tap   # Homebrew
 AGENTMETER_UNINSTALL=1 sh -c "$(curl -fsSL https://raw.githubusercontent.com/SaeedNoshadi89/agentmeter/main/install.sh)"   # script
 rm -rf ~/.cache/agentmeter ~/.cache/agentmeter.json ~/.config/agentmeter   # cached data and preferences
 ```
@@ -314,6 +321,7 @@ To share a screenshot safely, use `--demo`, which shows made-up accounts and num
 | No icons, only text marks | Your terminal can't show images, or the icons couldn't be downloaded. The text marks work the same. |
 | The status line doesn't appear | Start a new Claude Code session. Check `agentmeter statusline status`. |
 | `brew upgrade` changes nothing | Another copy in `~/.local/bin` comes first on your `PATH`. See [Uninstalling](#uninstalling). |
+| `Refusing to load formula … from untrusted tap` | Run `brew trust --formula saeednoshadi89/tap/agentmeter`, then `brew install agentmeter` again. |
 
 Still stuck? **[Open an issue](https://github.com/SaeedNoshadi89/agentmeter/issues).** That's how agentmeter gets better.
 

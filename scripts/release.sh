@@ -25,8 +25,7 @@ git push -q origin "v$version"
 gh release create "v$version" --verify-tag --title "agentmeter $version" --notes "$summary
 
 \`\`\`sh
-brew tap SaeedNoshadi89/tap
-brew install agentmeter     # or: brew upgrade agentmeter
+brew install SaeedNoshadi89/tap/agentmeter     # or: brew upgrade agentmeter
 \`\`\`"
 
 # 3. Homebrew formula
