@@ -29,7 +29,11 @@ t c2 "$A" --claude-config /nonexistent --json; [[ $out == *"not logged in"* ]] &
 echo "status line"
 t s1 sh -c "echo '{}' | env -u CLAUDE_CONFIG_DIR '$A' statusline"; [[ $code == 0 && $(echo "$out"|strip) == *"✻"* ]] && ok "statusline prints a line" || no statusline "$out"
 a=$(echo '{}' | env -u CLAUDE_CONFIG_DIR "$A" statusline --only claude | strip); b=$(echo '{}' | CLAUDE_CONFIG_DIR="$HOME/.claude-personal" "$A" statusline --only claude | strip)
-[[ -n $a && -n $b && $a != "$b" ]] && ok "statusline follows the session's account" || no "statusline account" "default=$a personal=$b"
+if [[ $a == *retrying* || $b == *retrying* || $a == *"not logged in"* ]]; then
+  printf '  skip  %s\n' "statusline follows the session's account (an account has no numbers right now)"
+else
+  [[ -n $a && -n $b && $a != "$b" ]] && ok "statusline follows the session's account" || no "statusline account" "default=$a personal=$b"
+fi
 t s2 sh -c "echo '{}' | '$A' statusline --only codex"; s=$(echo "$out"|strip); [[ $s == ">_"* && $s != *"✻"* ]] && ok "statusline --only codex" || no "--only codex" "$s"
 t s3 sh -c "echo '{}' | '$A' statusline --demo --only claude,codex"; [[ $(echo "$out"|strip) == *"5h 64%"* ]] && ok "statusline --demo" || no "statusline --demo" "$out"
 ms=$(python3 -c "
