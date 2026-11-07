@@ -294,6 +294,7 @@ Claude Code keeps each login in a config folder: `~/.claude` by default, or what
 - The popup shows the last numbers at once and updates in place. The docked pane refreshes every minute. The status line refreshes in the background when its numbers are over a minute old.
 - **Codex** only updates its numbers when it runs, so they are as fresh as your last Codex turn. If a window's reset time has passed, it's shown as 100% left.
 - **Claude's usage check is undocumented** and may change.
+- **If a check fails**, for example "rate limited" when the service is asked too often, agentmeter keeps showing the last good numbers, marked "as of" with the time and reason. After a rate limit it waits 5 minutes, or as long as the service asks, before trying that account again.
 
 ## Privacy
 
@@ -307,6 +308,7 @@ To share a screenshot safely, use `--demo`, which shows made-up accounts and num
 | --- | --- |
 | An agent is missing | Check that its command runs in your terminal and that you've signed in to it at least once. |
 | Claude shows "not logged in" or "login expired" | Run `claude` and sign in again. |
+| "rate limited, retrying soon" | The usage check was called too often. agentmeter waits and retries on its own, and keeps the last good numbers meanwhile. |
 | Codex numbers look old | Codex only updates them when it runs. Use Codex and they refresh. |
 | The shortcut does nothing | Run `rex config check`. If agentmeter isn't listed, run `agentmeter setup-rex`. |
 | No icons, only text marks | Your terminal can't show images, or the icons couldn't be downloaded. The text marks work the same. |

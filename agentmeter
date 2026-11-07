@@ -27,7 +27,7 @@ Usage:
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -47,12 +47,32 @@ def iso(ts):
     return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() if ts else None
 
 
+class FetchError(RuntimeError):
+    """A failed check. `login` means signing in again helps; `retry_in` is how long to back off."""
+    def __init__(self, message, login=False, retry_in=None):
+        super().__init__(message)
+        self.login, self.retry_in = login, retry_in
+
+
+RATE_LIMIT_BACKOFF = 300      # seconds to wait after a 429 when the server doesn't say
+
+
 def http_json(url, headers):
     req = urllib.request.Request(url, headers={"User-Agent": "agentmeter", **headers})
     try:
         return json.load(urllib.request.urlopen(req, timeout=8))
     except urllib.error.HTTPError as e:
-        raise RuntimeError("login expired" if e.code in (401, 403) else f"HTTP {e.code}")
+        if e.code in (401, 403):
+            raise FetchError("login expired", login=True)
+        if e.code == 429:
+            try:
+                wait = int(e.headers.get("Retry-After") or RATE_LIMIT_BACKOFF)
+            except ValueError:
+                wait = RATE_LIMIT_BACKOFF
+            raise FetchError("rate limited, retrying soon", retry_in=max(60, wait))
+        raise FetchError(f"service error {e.code}, retrying soon", retry_in=120)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise FetchError("offline, retrying soon", retry_in=60)
 
 
 # ---- Claude Code ---------------------------------------------------------
@@ -116,8 +136,10 @@ def claude(cfg):
         raise RuntimeError("not logged in (run `claude`)")
     try:
         return claude_usage(json.loads(raw)["claudeAiOauth"]["accessToken"])
-    except RuntimeError as e:
-        raise RuntimeError(f"{e} (run `claude`)")
+    except FetchError as e:
+        if e.login:
+            raise FetchError(f"{e} (run `claude`)", login=True)
+        raise
 
 
 # ---- Codex ---------------------------------------------------------------
@@ -295,23 +317,35 @@ def collect(fresh=False, claude_dirs=None):
     def run(job):
         key, aid, label, account, fn = job
         hit = cache.get(key)
-        if not fresh and hit and now - hit["at"] < CACHE_TTL and "agent" in hit["data"]:
-            return key, hit["data"], False
+        usable = hit and "agent" in hit["data"]
+        if usable and hit.get("retry_at"):
+            if now < hit["retry_at"]:                         # backing off after an error,
+                return key, hit, False                        # even when asked to refresh
+        elif usable and not fresh and now - hit["at"] < CACHE_TTL:
+            return key, hit, False
         try:
             v = fn()
             v["meters"] = [m for m in v.get("meters", []) if m]
+            v.update(agent=aid, label=label, account=account)
+            return key, {"at": now, "data": v, "good_at": now}, True
         except Exception as e:
-            v = {"error": str(e)}
-        v.update(agent=aid, label=label, account=account)
-        return key, v, True
+            retry_in = getattr(e, "retry_in", None) or CACHE_TTL
+            last_good = hit and hit["data"].get("meters") and "error" not in hit["data"]
+            if last_good:
+                # Keep showing the last good numbers, marked with their time, and note the problem.
+                v = dict(hit["data"], stale=str(e), as_of=hit.get("good_at", hit["at"]))
+                return key, {"at": now, "data": v, "good_at": hit.get("good_at", hit["at"]),
+                             "retry_at": now + retry_in}, True
+            v = {"error": str(e), "agent": aid, "label": label, "account": account}
+            return key, {"at": now, "data": v, "retry_at": now + retry_in}, True
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(run, jobs))
     data = {}
-    for key, v, new in results:
-        data[key] = v
+    for key, entry, new in results:
+        data[key] = entry["data"]
         if new:
-            cache[key] = {"at": now, "data": v}
+            cache[key] = entry
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     with open(CACHE, "w") as fh:
         json.dump(cache, fh)
@@ -524,7 +558,8 @@ def lines_for(data, bar_w):
         if u.get("account"):
             title += f"  {DIM}{u['account']}{RESET}"
         if "as_of" in u:
-            title += f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}"
+            title += f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}"
+            title += f" · {u['stale']}{RESET}" if u.get("stale") else f"{RESET}"
         quiet = "error" in u or not u.get("meters")
         out.append(f"{icon(aid, muted=quiet)}{title}")
         if "error" in u or u.get("note"):
