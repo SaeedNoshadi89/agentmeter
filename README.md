@@ -1,10 +1,18 @@
 # agentmeter
 
-See how much of your **5-hour** and **weekly** limits is left for your coding agents, **Claude Code** and **Codex**, from the terminal or as a popup in [Rex](https://www.superlogical.com/rex).
+See how much of your coding agents' usage limits is left, from the terminal or as a popup in [Rex](https://www.superlogical.com/rex). agentmeter finds the agents installed on your machine and lists each one: Claude Code and Codex with their **5-hour** and **weekly** limits, OpenCode with its provider's budget, and more.
 
 <img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="640">
 
-Each bar shows the share left in that window. It's green at 50% or more, yellow from 20%, and red below. The dot beside each agent takes the color of its lower window. Colors use the basic ANSI palette, so they follow your terminal theme. In the popup, press **r** to refresh and any other key to close.
+Each bar shows the share left. Every agent and every window uses the same colors:
+
+| Left | Color |
+| --- | --- |
+| 50% or more | green |
+| under 50% | orange |
+| under 30% | red |
+
+In the popup, press **r** to refresh and any other key to close.
 
 ## Install
 
@@ -49,6 +57,19 @@ agentmeter --version
 
 In Rex, press **Shift+Cmd+U**, search for "Show Agent Usage" in the command palette, or run `rex do agent_usage`.
 
+## Supported agents
+
+An agent is listed when its command is installed or its data folder exists.
+
+| Agent | What's shown |
+| --- | --- |
+| ✻ Claude Code | 5-hour and weekly limits, for each account |
+| >_ Codex | 5-hour and weekly limits, from its last run |
+| ▣ OpenCode | One row for each provider it's signed in to. An OpenRouter key shows its budget, for example "Monthly $250 of $250". A Claude subscription login shows 5-hour and weekly limits. An API key is marked pay-as-you-go. |
+| Gemini CLI, Cursor Agent, Amp, Copilot CLI, Qwen Code, Crush, Factory Droid, Aider | Listed when installed. Usage isn't available yet. |
+
+To add an agent, add a row to `AGENTS` in `agentmeter`. Each row needs a check for whether the agent is installed, and a function that returns its meters.
+
 ## Several Claude accounts
 
 Claude Code keeps each login in a config folder: `~/.claude` by default, or whatever `CLAUDE_CONFIG_DIR` points to. agentmeter finds every logged-in folder (`~/.claude`, `~/.claude-*` and `~/.config/claude*`) and labels each one with its account email.
@@ -61,6 +82,7 @@ Claude Code keeps each login in a config folder: `~/.claude` by default, or what
 | Agent | Source |
 | --- | --- |
 | Claude Code | `GET https://api.anthropic.com/api/oauth/usage`, using the token Claude Code saved when you logged in. On macOS that's the Keychain item `Claude Code-credentials`. For a custom config folder, the item name gets `-` plus the first 8 hex characters of the SHA-256 of the folder path. On Linux it's `<config folder>/.credentials.json`. |
+| OpenCode | `~/.local/share/opencode/auth.json`. OpenRouter keys are checked with `GET https://openrouter.ai/api/v1/key`, and Claude logins with the same usage check as Claude Code. |
 | Codex | The last `rate_limits` entry in `~/.codex/sessions/**/rollout-*.jsonl`. This is read locally, with no network call. The `primary` entry is the 5h window and `secondary` is the weekly one. |
 
 Notes:
@@ -70,11 +92,7 @@ Notes:
 
 ## Privacy
 
-Your Claude token is sent only to `api.anthropic.com`. agentmeter never logs it, stores it or sends it anywhere else. Nothing else leaves your machine.
-
-## Adding another agent
-
-Write a function that returns `{"five_hour": window(used_pct, resets_at_epoch), "weekly": ...}`, then add it to `PROVIDERS` in `agentmeter`.
+Each token or key is sent only to its own service: Claude tokens to `api.anthropic.com` and OpenRouter keys to `openrouter.ai`. agentmeter never logs or stores them, and never sends them anywhere else. Nothing else leaves your machine.
 
 ## License
 

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""agentmeter: how much of your 5-hour and weekly agent limits is left.
+"""agentmeter: how much of your coding agents' usage limits is left.
 
-Sources:
-  claude  GET https://api.anthropic.com/api/oauth/usage  (token from Claude Code's login)
-  codex   last `rate_limits` entry in ~/.codex/sessions/**/rollout-*.jsonl (local only)
+Finds the agents installed on this machine and shows each one's limits:
+  Claude Code  5-hour + weekly, per account   GET api.anthropic.com/api/oauth/usage
+  Codex        5-hour + weekly                 last `rate_limits` in ~/.codex/sessions (local)
+  OpenCode     per login in its auth.json      OpenRouter key budget, Claude subscription, ...
+  others       listed when installed (Gemini CLI, Cursor Agent, Amp, Copilot CLI, ...)
 
 Usage:
-  agentmeter [--json] [--popup]               all Claude accounts + Codex
+  agentmeter [--json] [--popup]               every agent found
   agentmeter --claude-config DIR               one Claude account (its CLAUDE_CONFIG_DIR)
   agentmeter --pid PID                         the account of a running Claude Code process
   agentmeter setup-rex [--key shift+cmd+u]   add the popup to Rex's init.lua
@@ -22,14 +24,26 @@ CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
 
 
-def window(used, resets_at):
-    """Normalise to {used, left, resets_at(epoch)}; a past reset means the window is fresh."""
+def meter(label, used, resets_at=None, detail=None):
+    """One limit: share used (0-100) and when it resets. A past reset means it's fresh again."""
     if used is None:
         return None
     if resets_at and resets_at < time.time():
         used, resets_at = 0.0, None
     used = max(0.0, min(100.0, float(used)))
-    return {"used": used, "left": 100.0 - used, "resets_at": resets_at}
+    return {"label": label, "used": used, "left": 100.0 - used, "resets_at": resets_at, "detail": detail}
+
+
+def iso(ts):
+    return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp() if ts else None
+
+
+def http_json(url, headers):
+    req = urllib.request.Request(url, headers={"User-Agent": "agentmeter", **headers})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=8))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("login expired" if e.code in (401, 403) else f"HTTP {e.code}")
 
 
 # ---- Claude Code ---------------------------------------------------------
@@ -79,27 +93,22 @@ def pane_claude_dir(pid):
     return os.path.expanduser(m.group(1)).rstrip("/") if m else None
 
 
-def iso(ts):
-    return datetime.fromisoformat(ts).timestamp() if ts else None
+def claude_usage(token):
+    d = http_json("https://api.anthropic.com/api/oauth/usage",
+                  {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"})
+    f, w = d.get("five_hour") or {}, d.get("seven_day") or {}
+    return {"meters": [meter("5-hour", f.get("utilization"), iso(f.get("resets_at"))),
+                       meter("Weekly", w.get("utilization"), iso(w.get("resets_at")))]}
 
 
 def claude(cfg):
     raw = read_credentials(cfg)
     if not raw:
         raise RuntimeError("not logged in (run `claude`)")
-    token = json.loads(raw)["claudeAiOauth"]["accessToken"]
-    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
-        "Authorization": f"Bearer {token}",
-        "anthropic-beta": "oauth-2025-04-20",
-        "User-Agent": "agentmeter",
-    })
     try:
-        d = json.load(urllib.request.urlopen(req, timeout=8))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError("login expired (run `claude`)" if e.code == 401 else f"HTTP {e.code}")
-    f, w = d.get("five_hour") or {}, d.get("seven_day") or {}
-    return {"five_hour": window(f.get("utilization"), iso(f.get("resets_at"))),
-            "weekly": window(w.get("utilization"), iso(w.get("resets_at")))}
+        return claude_usage(json.loads(raw)["claudeAiOauth"]["accessToken"])
+    except RuntimeError as e:
+        raise RuntimeError(f"{e} (run `claude`)")
 
 
 # ---- Codex ---------------------------------------------------------------
@@ -117,12 +126,12 @@ def codex():
         rl = find_key(json.loads(last), "rate_limits")
         if not rl:
             continue
-        out = {"five_hour": None, "weekly": None, "as_of": os.path.getmtime(path)}
+        meters = []
         for slot in ("primary", "secondary"):
             s = rl.get(slot) or {}
-            key = "five_hour" if s.get("window_minutes", 0) <= 300 else "weekly"
-            out[key] = window(s.get("used_percent"), s.get("resets_at"))
-        return out
+            label = "5-hour" if s.get("window_minutes", 0) <= 300 else "Weekly"
+            meters.append(meter(label, s.get("used_percent"), s.get("resets_at")))
+        return {"meters": meters, "as_of": os.path.getmtime(path)}
     raise RuntimeError("no Codex session data yet")
 
 
@@ -139,30 +148,115 @@ def find_key(obj, key):
     return None
 
 
+# ---- OpenCode ------------------------------------------------------------
+# OpenCode can sign in to many providers; ~/.local/share/opencode/auth.json
+# holds one login per provider. Each becomes its own entry.
+OPENCODE_AUTH = os.path.expanduser("~/.local/share/opencode/auth.json")
+PROVIDER_NAMES = {"openrouter": "OpenRouter", "anthropic": "Claude", "openai": "OpenAI",
+                  "github-copilot": "GitHub Copilot", "google": "Google"}
+
+
+def openrouter(key):
+    d = http_json("https://openrouter.ai/api/v1/key", {"Authorization": f"Bearer {key}"}).get("data") or {}
+    limit, left = d.get("limit"), d.get("limit_remaining")
+    if not limit:
+        return {"meters": [], "note": f"${d.get('usage') or 0:.2f} spent, no budget set"}
+    budget = d.get("effective_budget") or {}
+    period = {"daily": "Daily", "weekly": "Weekly", "monthly": "Monthly"}.get(d.get("limit_reset"), "Budget")
+    used = 100 * (1 - (left or 0) / limit)
+    return {"meters": [meter(period, used, iso(budget.get("resets_at")), f"${left:,.0f} of ${limit:,.0f}")]}
+
+
+def opencode_entries():
+    try:
+        auth = json.load(open(OPENCODE_AUTH))
+    except Exception:
+        return [("opencode", None, lambda: {"meters": [], "note": "not signed in to a provider"})]
+    out = []
+    for prov, cred in auth.items():
+        name = PROVIDER_NAMES.get(prov, prov)
+        if prov == "openrouter" and cred.get("key"):
+            fetch = lambda k=cred["key"]: openrouter(k)
+        elif prov == "anthropic" and cred.get("type") == "oauth":
+            fetch = lambda c=cred: (claude_usage(c["access"]) if c.get("expires", 0) / 1000 > time.time()
+                                    else {"meters": [], "note": "token expired, open OpenCode to refresh"})
+        else:
+            kind = "API key, pay as you go" if cred.get("type") == "api" else "no usage limits to show"
+            fetch = lambda kind=kind: {"meters": [], "note": kind}
+        out.append((f"opencode:{prov}", f"via {name}", fetch))
+    return out
+
+
+# ---- agent registry -------------------------------------------------------
+# An agent is shown when its command is installed or its data folder exists.
+# The PATH is widened because Rex starts the popup without your shell's PATH.
+EXTRA_PATH = ["~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "~/.opencode/bin",
+              "~/.bun/bin", "~/.npm-global/bin", "~/.volta/bin", "~/.cargo/bin"]
+
+
+def installed(bins=(), paths=()):
+    import shutil
+    path = os.pathsep.join([os.environ.get("PATH", "")] + [os.path.expanduser(p) for p in EXTRA_PATH])
+    return (any(shutil.which(b, path=path) for b in bins)
+            or any(os.path.exists(os.path.expanduser(p)) for p in paths))
+
+
+def listed_only(note="no usage limits to show"):
+    return lambda: [("", None, lambda: {"meters": [], "note": note})]
+
+
+# (id, display name, detect, entries) - entries -> [(key suffix, account, fetch)]
+AGENTS = [
+    ("claude", "Claude Code", lambda: installed(["claude"], ["~/.claude.json", "~/.claude"]), None),
+    ("codex", "Codex", lambda: installed(["codex"], ["~/.codex/sessions"]),
+     lambda: [("", None, codex)]),
+    ("opencode", "OpenCode", lambda: installed(["opencode"], [OPENCODE_AUTH]), opencode_entries),
+    ("gemini", "Gemini CLI", lambda: installed(["gemini"]), listed_only()),
+    ("cursor", "Cursor Agent", lambda: installed(["cursor-agent"]), listed_only()),
+    ("amp", "Amp", lambda: installed(["amp"]), listed_only()),
+    ("copilot", "Copilot CLI", lambda: installed(["copilot"]), listed_only()),
+    ("qwen", "Qwen Code", lambda: installed(["qwen"]), listed_only()),
+    ("crush", "Crush", lambda: installed(["crush"]), listed_only()),
+    ("droid", "Factory Droid", lambda: installed(["droid"]), listed_only()),
+    ("aider", "Aider", lambda: installed(["aider"]), listed_only("uses your own API keys")),
+]
+
+
+def jobs_for(claude_dirs):
+    jobs = []
+    for aid, name, detect, entries in AGENTS:
+        if aid == "claude":
+            if claude_dirs is None and not detect():
+                continue
+            for d in (claude_dirs if claude_dirs is not None else claude_accounts()):
+                jobs.append((f"claude:{d or 'default'}", aid, name, claude_email(d), lambda d=d: claude(d)))
+        elif detect():
+            for suffix, account, fetch in entries():
+                jobs.append((suffix if ":" in suffix else aid + (f":{suffix}" if suffix else ""),
+                             aid, name, account, fetch))
+    return jobs
+
+
 # ---- collect + cache -----------------------------------------------------
 def collect(fresh=False, claude_dirs=None):
-    """Usage per entry, keyed "claude:<dir>" / "codex". Each entry is cached for CACHE_TTL."""
-    if claude_dirs is None:
-        claude_dirs = claude_accounts()
-    jobs = [(f"claude:{d or 'default'}", "Claude Code", claude_email(d), lambda d=d: claude(d))
-            for d in claude_dirs]
-    jobs.append(("codex", "Codex", None, codex))
+    """Usage per entry, in display order. Each entry is cached for CACHE_TTL."""
     try:
         cache = json.load(open(CACHE))
         cache = cache if isinstance(cache, dict) and "data" not in cache else {}
     except Exception:
         cache = {}
     data, now = {}, time.time()
-    for key, label, account, fn in jobs:
+    for key, aid, label, account, fn in jobs_for(claude_dirs):
         hit = cache.get(key)
-        if not fresh and hit and now - hit["at"] < CACHE_TTL:
+        if not fresh and hit and now - hit["at"] < CACHE_TTL and "agent" in hit["data"]:
             data[key] = hit["data"]
             continue
         try:
             v = fn()
+            v["meters"] = [m for m in v.get("meters", []) if m]
         except Exception as e:
             v = {"error": str(e)}
-        v.update(label=label, account=account)
+        v.update(agent=aid, label=label, account=account)
         cache[key] = {"at": now, "data": v}
         data[key] = v
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
@@ -175,22 +269,31 @@ def collect(fresh=False, claude_dirs=None):
 # Minimal and theme-friendly: basic ANSI colors only (Rex maps them to its
 # palette), thin line bars, muted secondary text, title in the pane header.
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
-NAMES = {"claude": "Claude Code", "codex": "Codex"}
-WINDOWS = (("5-hour", "five_hour"), ("Weekly", "weekly"))
+# Each tool's own mark where it has one: Claude Code's spark in Claude orange,
+# Codex CLI's prompt, Gemini's sparkle in Gemini blue.
+ICONS = {"claude": ("\033[38;2;217;119;87m", "✻ "), "codex": ("", ">_"),
+         "gemini": ("\033[38;2;71;150;227m", "✦ "), "opencode": ("", "▣ ")}
+
+
+def icon(aid, muted=False):
+    color, mark = ICONS.get(aid, ("", "◆ "))
+    return f"{DIM if muted else color}{BOLD}{mark}{RESET}"
+
+
+GREEN, ORANGE, RED = "\033[32m", "\033[38;5;208m", "\033[31m"
 
 
 def tone(left):
-    return "\033[32m" if left >= 50 else "\033[33m" if left >= 20 else "\033[31m"
+    """Color for the share left, same for every agent and window."""
+    return GREEN if left >= 50 else ORANGE if left >= 30 else RED
 
 
-def bar(w, width):
+def bar(m, width):
     """Thin bar with half-cell precision: ━ full, ╸ half, ─ track."""
-    if not w:
-        return f"{DIM}{'─' * width}{RESET}"
-    halves = round(w["left"] / 100 * width * 2)
+    halves = round(m["left"] / 100 * width * 2)
     full, half = divmod(halves, 2)
     filled = "━" * full + ("╸" if half else "")
-    return f"{tone(w['left'])}{filled}{RESET}{DIM}{'─' * (width - len(filled))}{RESET}"
+    return f"{tone(m['left'])}{filled}{RESET}{DIM}{'─' * (width - len(filled))}{RESET}"
 
 
 def reset_text(ts):
@@ -200,7 +303,8 @@ def reset_text(ts):
     if secs < 86400:
         h, m = int(secs // 3600), int(secs % 3600 // 60)
         return f"resets in {h}h {m:02d}m" if h else f"resets in {m}m"
-    return "resets " + time.strftime("%a %H:%M", time.localtime(ts))
+    fmt = "%a %H:%M" if secs < 6 * 86400 else "%b %d"
+    return "resets " + time.strftime(fmt, time.localtime(ts))
 
 
 def visible_len(text):
@@ -209,23 +313,23 @@ def visible_len(text):
 
 
 def lines_for(data, width):
-    bar_w = max(10, min(28, width - 44))
+    bar_w = max(10, min(28, width - 50))
     out = []
-    for name, u in data.items():
-        title = u.get("label") or NAMES.get(name, name)
+    for u in data.values():
+        aid = u.get("agent", "")
+        title = f"{BOLD}{u.get('label', aid)}{RESET}"
         if u.get("account"):
-            title += f"{RESET}  {DIM}{u['account']}"
-        if "error" in u:
-            out += [f"{DIM}●{RESET} {BOLD}{title}{RESET}", f"  {DIM}{u['error']}{RESET}", ""]
-            continue
-        lefts = [u[k]["left"] for _, k in WINDOWS if u.get(k)]
-        dot = f"{tone(min(lefts))}●{RESET}" if lefts else f"{DIM}●{RESET}"
-        note = f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}" if "as_of" in u else ""
-        out.append(f"{dot} {BOLD}{title}{RESET}{note}")
-        for label, key in WINDOWS:
-            w = u.get(key)
-            pct = f"{tone(w['left'])}{w['left']:3.0f}%{RESET}" if w else f"{DIM}  –{RESET} "
-            out.append(f"  {DIM}{label:<7}{RESET} {bar(w, bar_w)}  {pct}  {DIM}{reset_text(w and w['resets_at'])}{RESET}")
+            title += f"  {DIM}{u['account']}{RESET}"
+        if "as_of" in u:
+            title += f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}"
+        quiet = "error" in u or not u.get("meters")
+        out.append(f"{icon(aid, muted=quiet)} {title}")
+        if "error" in u or u.get("note"):
+            out.append(f"   {DIM}{u.get('error') or u['note']}{RESET}")
+        for m in u.get("meters", []):
+            extra = "  ".join(x for x in (m.get("detail"), reset_text(m.get("resets_at"))) if x)
+            out.append(f"   {DIM}{m['label']:<7}{RESET} {bar(m, bar_w)}  "
+                       f"{tone(m['left'])}{m['left']:3.0f}%{RESET}  {DIM}{extra}{RESET}")
         out.append("")
     return out
 
@@ -290,7 +394,7 @@ rex.action{
     end
     return rex.session.new_layer{
       session_id = ctx.session_id,
-      bounds = { 0.3, 0.28, 0.4, 0.34 },
+      bounds = { 0.28, 0.22, 0.44, 0.5 },
       focus  = true,
       layout = rex.layout.block{
         flavor  = "com.superlogical.terminal.shell",
