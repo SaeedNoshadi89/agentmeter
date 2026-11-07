@@ -125,8 +125,8 @@ def build_report(data, only):
         limits = []
         for m in entry.get("meters") or []:
             left, resets = m.get("left"), m.get("resets_at")
-            if resets and resets <= now:          # the window has already started over
-                left, resets = 100.0, None
+            if resets and resets <= now:          # usage in the new window is unobserved
+                left, resets = None, None
             limits.append({
                 "limit": LABELS.get(m.get("label"), m.get("label") or "limit"),
                 "left_percent": None if left is None else round(left),
@@ -185,7 +185,8 @@ def text_report(report):
     for a in report["agents"]:
         lines.append(a["agent"] + (f" ({a['account']})" if a["account"] else ""))
         for lim in a["limits"]:
-            parts = [f"  {lim['limit']}: {lim['left_percent']}% left"]
+            value = f"{lim['left_percent']}% left" if lim['left_percent'] is not None else "awaiting update"
+            parts = [f"  {lim['limit']}: {value}"]
             if lim["budget_left"]:
                 parts.append(lim["budget_left"])
             if lim["resets_at"]:

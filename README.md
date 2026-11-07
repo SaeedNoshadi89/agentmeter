@@ -272,6 +272,10 @@ These are your terminal theme's own colors, and every view uses your terminal fo
 
 Each agent is shown with its own round icon. The icons are downloaded once from each agent's website, through Google's favicon service, and cached locally. They appear in terminals that can show images: Rex, kitty, Ghostty and WezTerm. Elsewhere, or with `--no-icons`, a text mark is used instead, such as `✻` for Claude Code and `>_` for Codex.
 
+The Claude Code status line defaults to portable marks with agent names: `✻ Claude` and `>_ Codex`. For the Claude and OpenAI brand glyphs, add `--nerd-icons` to the status line command and select a current Nerd Font containing `nf-cod-claude` (U+EC82) and `nf-cod-openai` (U+EC81) as your active terminal font. Merely installing that font does not make these glyphs available in the active font. `--no-icons` always selects the portable marks. The footer does not emit terminal image escape sequences. Both agents' limits can appear in Claude Code's footer; AgentMeter does not install a custom footer inside Codex itself.
+
+In Rex, you can preserve your primary font: open Settings → Terminal → Advanced → Fallback fonts → Add, then select a current Nerd Font such as AnnotationM Nerd Font Mono. Enable `--nerd-icons` in the AgentMeter status line command. Confirm the logos render in the live footer; installed-font coverage alone does not verify terminal rendering.
+
 ## Supported agents
 
 An agent is listed when its command is installed or its data folder exists.
@@ -299,13 +303,14 @@ Claude Code keeps each login in a config folder: `~/.claude` by default, or what
 | --- | --- |
 | Claude Code | `GET https://api.anthropic.com/api/oauth/usage`, using the token Claude Code saved when you logged in. On macOS that's the Keychain item `Claude Code-credentials`. For a custom config folder, the item name gets `-` plus the first 8 hex characters of the SHA-256 of the folder path. On Linux it's `<config folder>/.credentials.json`. |
 | OpenCode | `~/.local/share/opencode/auth.json`. OpenRouter keys are checked with `GET https://openrouter.ai/api/v1/key`, and Claude logins with the same usage check as Claude Code. |
-| Codex | The last `rate_limits` entry in `~/.codex/sessions/**/rollout-*.jsonl`. This is read locally, with no network call. |
+| Codex | The newest valid Codex `rate_limits` event by its recorded timestamp across `~/.codex/sessions/**/rollout-*.jsonl` (or `$CODEX_HOME/sessions`). File modification times do not override event timestamps. This is read locally, with no network call. |
 
 **How fresh the numbers are:**
 - **In Claude Code's status line**, Claude's numbers come straight from Claude Code with no network call (for Pro, Max and Ultra subscribers, after a session's first reply), and are saved for the popup, pane and skill.
 - Otherwise Claude's usage service is asked at most every 5 minutes, because it rate-limits quickly. Other agents are checked every minute at most. All are fetched at the same time.
 - The popup shows the last numbers at once and updates in place. The docked pane refreshes every minute. The status line refreshes the other agents in the background.
-- **Codex** only updates its numbers when it runs, so they are as fresh as your last Codex turn. If a window's reset time has passed, it's shown as 100% left.
+- **Codex** only updates its numbers when it runs, so they are as fresh as your last Codex turn. If a window's reset time has passed, it shows `awaiting update` until a fresh observation arrives, rather than assuming 100% remains. JSON reports `left: null` and `expired: true` for that window. The same rule applies to expired Claude and provider observations.
+- The status line marks failed checks as `stale` and shows `as of` for readings older than their refresh interval.
 - **Claude's usage check is undocumented** and may change.
 - **If a check fails**, for example "rate limited" when the service is asked too often, agentmeter keeps showing the last good numbers, marked "as of" with the time and reason. After a rate limit it waits 5 minutes, then 10, 20 and so on up to an hour if it keeps happening, or longer if the service asks, before trying that account again. Using Claude Code with the status line on gives fresh numbers meanwhile.
 
@@ -355,6 +360,7 @@ cd agentmeter
 ./agentmeter --demo          # try changes with made-up data
 tests/cli.sh ./agentmeter    # run the CLI tests (no real config changes, no usage service calls)
 python3 tests/cache.py       # run the cache and back-off tests (fake data)
+python3 tests/accuracy.py    # usage ordering, expired windows, footer icons (offline)
 python3 tests/skill.py       # run the skill tests (fake data, no logins)
 ./install.sh                 # install your local copy
 ```

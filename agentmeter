@@ -22,13 +22,14 @@ Usage:
   agentmeter remove-claude                     turn it off
   agentmeter remove-rex                      take it out again
   agentmeter --no-icons                        text marks instead of the agents' icons
+  agentmeter statusline --nerd-icons           brand glyphs (requires Nerd Font support)
   agentmeter --demo [--popup]                  made-up accounts and numbers, for screenshots
   agentmeter --version
 """
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.3.3"
+VERSION = "0.3.4"
 
 CACHE = os.environ.get("AGENTMETER_CACHE") or os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -36,13 +37,12 @@ CLAUDE_TTL = 300              # Claude's usage service rate-limits quickly, so a
 
 
 def meter(label, used, resets_at=None, detail=None):
-    """One limit: share used (0-100) and when it resets. A past reset means it's fresh again."""
+    """One observed limit. A passed reset needs a new reading, not an invented balance."""
     if used is None:
         return None
-    if resets_at and resets_at < time.time():
-        used, resets_at = 0.0, None
     used = max(0.0, min(100.0, float(used)))
-    return {"label": label, "used": used, "left": 100.0 - used, "resets_at": resets_at, "detail": detail}
+    return current({"label": label, "used": used, "left": 100.0 - used,
+                    "resets_at": resets_at, "detail": detail})
 
 
 def iso(ts):
@@ -183,26 +183,55 @@ def claude(cfg):
 
 # ---- Codex ---------------------------------------------------------------
 def codex():
-    files = sorted(glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/rollout-*.jsonl")),
-                   key=os.path.getmtime, reverse=True)
-    for path in files[:20]:  # newest session that has rate-limit data
-        last = None
-        with open(path, errors="ignore") as fh:
-            for line in fh:
-                if '"rate_limits"' in line:
-                    last = line
-        if not last:
-            continue
-        rl = find_key(json.loads(last), "rate_limits")
-        if not rl:
-            continue
-        meters = []
-        for slot in ("primary", "secondary"):
-            s = rl.get(slot) or {}
-            label = "5-hour" if s.get("window_minutes", 0) <= 300 else "Weekly"
-            meters.append(meter(label, s.get("used_percent"), s.get("resets_at")))
-        return {"meters": meters, "as_of": os.path.getmtime(path)}
+    home = os.path.expanduser(os.environ.get("CODEX_HOME") or "~/.codex")
+    latest = None
+    for path in glob.glob(os.path.join(home, "sessions/*/*/*/rollout-*.jsonl")):
+        try:
+            for line in reversed_lines(path):
+                if b'"rate_limits"' not in line:
+                    continue
+                try:
+                    event = json.loads(line)
+                    rl = find_key(event, "rate_limits")
+                    if not isinstance(rl, dict) or rl.get("limit_id") not in (None, "codex"):
+                        continue
+                    meters = []
+                    for slot in ("primary", "secondary"):
+                        s = rl.get(slot) or {}
+                        minutes = s.get("window_minutes")
+                        label = {300: "5-hour", 10080: "Weekly"}.get(minutes,
+                                    f"{minutes}-minute" if minutes else slot.title())
+                        if isinstance(s.get("used_percent"), (int, float)):
+                            meters.append(meter(label, s["used_percent"], s.get("resets_at")))
+                    if not meters:
+                        continue
+                    at = iso(event.get("timestamp")) or os.path.getmtime(path)
+                    if latest is None or at > latest["as_of"]:
+                        latest = {"meters": meters, "as_of": at}
+                    break
+                except (ValueError, TypeError, AttributeError):
+                    continue                  # partially written line or unrelated event
+        except OSError:
+            continue                          # session rotated or unreadable
+    if latest:
+        return latest
     raise RuntimeError("no Codex session data yet")
+
+
+def reversed_lines(path):
+    """Read from the end in bounded chunks; don't load long session transcripts."""
+    with open(path, "rb") as fh:
+        pos = fh.seek(0, os.SEEK_END)
+        pending = b""
+        while pos:
+            size = min(pos, 65536)
+            pos -= size
+            fh.seek(pos)
+            lines = (fh.read(size) + pending).split(b"\n")
+            pending = lines[0]
+            yield from reversed(lines[1:])
+        if pending:
+            yield pending
 
 
 def find_key(obj, key):
@@ -365,8 +394,17 @@ def cached_view(claude_dirs=None):
     cache, data = load_cache(), {}
     for key, aid, label, account, _ in jobs_for(claude_dirs):
         hit = cache.get(key)
-        data[key] = (hit["data"] if hit and "agent" in hit["data"]
+        data[key] = (current_data(hit) if hit and "agent" in hit["data"]
                      else {"agent": aid, "label": label, "account": account, "meters": [], "note": "loading…"})
+    return data
+
+
+def current_data(entry):
+    """Normalize cached observations for JSON as well as the terminal views."""
+    data = dict(entry["data"])
+    data["meters"] = [current(m) for m in data.get("meters", [])]
+    if "error" not in data:
+        data.setdefault("checked_at", entry.get("good_at", entry.get("at")))
     return data
 
 
@@ -402,7 +440,8 @@ def collect(fresh=False, claude_dirs=None):
             last_good = hit and hit["data"].get("meters") and "error" not in hit["data"]
             if last_good:
                 # Keep showing the last good numbers, marked with their time, and note the problem.
-                v = dict(hit["data"], stale=str(e), as_of=hit.get("good_at", hit["at"]))
+                v = dict(hit["data"], stale=str(e),
+                         as_of=hit["data"].get("as_of") or hit.get("good_at", hit["at"]))
                 return key, {"at": now, "data": v, "good_at": hit.get("good_at", hit["at"]),
                              "retry_at": now + retry_in, "fails": fails}, True
             v = {"error": str(e), "agent": aid, "label": label, "account": account}
@@ -412,7 +451,7 @@ def collect(fresh=False, claude_dirs=None):
         results = list(pool.map(run, jobs))
     data = {}
     for key, entry, new in results:
-        data[key] = entry["data"]
+        data[key] = current_data(entry)
         if new:
             cache[key] = entry
     save_cache(cache)
@@ -427,6 +466,8 @@ DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 # Codex CLI's prompt, Gemini's sparkle in Gemini blue.
 ICONS = {"claude": ("\033[33m", "✻ "), "codex": ("", ">_"),   # theme colors only
          "gemini": ("\033[34m", "✦ "), "opencode": ("", "▣ ")}
+# Nerd Fonts codicons are opt-in: the active terminal font may lack these glyphs.
+STATUS_ICONS = {"claude": "\uec82", "codex": "\uec81"}
 
 
 ICON_SITES = {"claude": "claude.ai", "codex": "chatgpt.com", "opencode": "opencode.ai",
@@ -592,6 +633,8 @@ def tone(left):
 
 def bar(m, width):
     """Thin bar with half-cell precision: ━ full, ╸ half, ─ track."""
+    if m.get("left") is None:
+        return f"{DIM}{'─' * width}{RESET}"
     halves = round(m["left"] / 100 * width * 2)
     full, half = divmod(halves, 2)
     filled = "━" * full + ("╸" if half else "")
@@ -599,9 +642,9 @@ def bar(m, width):
 
 
 def current(m):
-    """A meter as it is now: once its reset time has passed, the window is fresh again."""
+    """Expire an observation without guessing usage in the new window."""
     if m.get("resets_at") and m["resets_at"] <= time.time():
-        return dict(m, used=0.0, left=100.0, resets_at=None)
+        return dict(m, left=None, expired=True)
     return m
 
 
@@ -641,6 +684,9 @@ def lines_for(data, bar_w):
         if "error" in u or u.get("note"):
             out.append(f"    {DIM}{u.get('error') or u['note']}{RESET}")
         for m in map(current, u.get("meters", [])):
+            if m.get("left") is None:
+                out.append(f"    {DIM}{SHORT.get(m['label'], m['label']):<6}awaiting update (window reset){RESET}")
+                continue
             extra = "  ".join(x for x in (m.get("detail"), reset_text(m.get("resets_at"))) if x)
             out.append(f"    {DIM}{SHORT.get(m['label'], m['label']):<6}{RESET}{bar(m, bar_w)}  "
                        f"{tone(m['left'])}{m['left']:3.0f}%{RESET}  {DIM}{extra}{RESET}")
@@ -765,7 +811,7 @@ def use_claude_code_limits(payload, key, cfg, view, cache, now):
             "account": claude_email(cfg), "checked_at": now}
     view[key] = data
     previous = cache.get(key) or {}
-    same = [m["left"] for m in previous.get("data", {}).get("meters", [])] == [m["left"] for m in meters]
+    same = previous.get("data", {}).get("meters", []) == meters
     cache[key] = {"at": now, "data": data, "good_at": now}
     if not same or now - previous.get("at", 0) > 30 or previous.get("retry_at"):   # avoid needless writes
         save_cache(cache)
@@ -796,18 +842,28 @@ def statusline():
                                view, cache, now)
     reset_passed = any(m.get("resets_at") and m["resets_at"] <= now
                        for u in view.values() for m in u.get("meters", []))
-    if reset_passed or any(now - (cache.get(k) or {}).get("at", 0) > ttl_for(k) for k in view):
+    if "--demo" not in sys.argv and (reset_passed or any(
+            now - (cache.get(k) or {}).get("at", 0) > ttl_for(k) for k in view)):
         refresh_in_background()
 
     def short(u):
         parts = []
         for m in map(current, u.get("meters", [])):
             label = SHORT.get(m["label"], m["label"])
+            if m.get("left") is None:
+                parts.append(f"{DIM}{label} awaiting update{RESET}")
+                continue
             reset = reset_text(m.get("resets_at")).replace("resets in ", "").replace("resets ", "")
             reset = f"({reset})" if reset and m["left"] < 50 else ""
             parts.append(f"{DIM}{label}{RESET} {tone(m['left'])}{m['left']:.0f}%{RESET}"
                          + (f" {DIM}{reset}{RESET}" if reset else ""))
-        return f" {DIM}·{RESET} ".join(parts)
+        body = f" {DIM}·{RESET} ".join(parts)
+        at = u.get("as_of") or u.get("checked_at")
+        if u.get("stale"):
+            body += f" {DIM}[stale: {u['stale']}]{RESET}"
+        elif at and now - at > ttl_for("claude:" if u.get("agent") == "claude" else "codex"):
+            body += f" {DIM}[as of {time.strftime('%H:%M', time.localtime(at))}]{RESET}"
+        return body
 
     only = [a.strip() for a in arg_after("--only", "").split(",") if a.strip()]
     out = []
@@ -818,8 +874,11 @@ def statusline():
         if key.startswith("claude:") and key != mine and mine in view:
             continue                                    # other Claude accounts: only in the popup
         color, mark = ICONS.get(u.get("agent"), ("", "◆ "))
+        if "--nerd-icons" in sys.argv and "--no-icons" not in sys.argv:
+            mark = STATUS_ICONS.get(u.get("agent"), mark)
         body = short(u) or f"{DIM}{u.get('note') or u.get('error') or ''}{RESET}"
-        out.append(f"{color}{mark.strip()}{RESET} {body}")
+        name = {"claude": "Claude", "codex": "Codex"}.get(u.get("agent"), u.get("label", ""))
+        out.append(f"{color}{mark.strip()}{RESET} {name} {body}")
     print("   ".join(out))
 
 

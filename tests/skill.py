@@ -13,6 +13,7 @@ import sys
 import time
 
 sys.dont_write_bytecode = True
+os.environ.pop("CODEX_SANDBOX", None)  # sandbox behavior is exercised explicitly below
 HERE = os.path.dirname(os.path.abspath(__file__))
 PATH = os.path.join(HERE, "..", "skills", "agentmeter", "scripts", "usage.py")
 loader = importlib.machinery.SourceFileLoader("usage", PATH)
@@ -65,7 +66,7 @@ ok("no emails reach the agent", "@" not in out)
 ok("no home paths reach the agent", "/Users/" not in out and "/home/" not in out)
 ok("no tokens reach the agent", "sk-ant" not in out)
 ok("multiple accounts are numbered, not named", "account 1 of 3" in out and "account 3 of 3" in out)
-ok("a passed reset shows 100% left and no negative time", "5-hour limit: 100% left" in out and "in -" not in out)
+ok("a passed reset awaits an update instead of inventing 100% left", "5-hour limit: awaiting update" in out and "in -" not in out)
 ok("stale numbers are marked with their time and reason", "stale, last good numbers" in out and "rate limited" in out)
 ok("unavailable account says why", "unavailable" in out and "login expired" in out)
 ok("Codex freshness is explained", "Codex only updates" in out and "2h 00m ago" in out)
