@@ -66,13 +66,17 @@ Your choice is kept when you update or reinstall. Keys use Rex's format, such as
 ## Usage
 
 ```sh
-agentmeter           # print usage
-agentmeter --json    # machine-readable output
-agentmeter --popup   # full-screen view: r refreshes, any other key closes (used by the Rex popup)
+agentmeter                            # every agent and account
+agentmeter --json                     # machine-readable output
+agentmeter --claude-config ~/.claude-work   # one Claude account
+agentmeter --no-icons                 # text marks instead of icons
+agentmeter --popup                    # the popup view: r refreshes, any other key closes
+agentmeter setup-rex | remove-rex     # add or remove the Rex popup
+agentmeter shortcut [KEY]             # show or change the popup's shortcut
 agentmeter --version
 ```
 
-In Rex, press **Shift+Cmd+U**, search for "Show Agent Usage" in the command palette, or run `rex do agent_usage`.
+In Rex, press **Shift+Cmd+U** (or your own shortcut), search for "Show Agent Usage" in the command palette, or run `rex do agent_usage`.
 
 ## Supported agents
 
