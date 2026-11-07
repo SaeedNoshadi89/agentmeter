@@ -114,18 +114,22 @@ agentmeter can also show your limits in Claude Code's footer, under the prompt:
 The Claude part shows **the account that session is using**. With two accounts, each session shows its own numbers. Reset times appear only for windows under 50%.
 
 ```sh
-agentmeter setup-claude     # turn it on for every Claude config folder
-agentmeter remove-claude    # turn it off
+agentmeter statusline on        # turn it on (for every Claude config folder)
+agentmeter statusline off       # turn it off
+agentmeter statusline toggle    # switch
+agentmeter statusline status    # on or off, and which agents
 ```
+
+In Rex, you can also search the command palette for **Toggle Agent Usage in Claude Code Status Line**. Changes show up in new Claude Code sessions. Restart a session, for example with `claude --continue`, to see them there.
 
 Choose which agents appear with `--only`, using agent ids such as `claude`, `codex`, `opencode` and `gemini`:
 
 ```sh
-agentmeter setup-claude --only claude          # just this session's Claude account
-agentmeter setup-claude --only claude,codex    # Claude and Codex
+agentmeter statusline on --only claude          # just this session's Claude account
+agentmeter statusline on --only claude,codex    # Claude and Codex
 ```
 
-Run it again to change your choice. Use `--force` to replace a status line you set up yourself.
+Run it again to change your choice. Turning it off and on again keeps your choice. Use `--force` to replace a status line you set up yourself.
 
 Claude Code puts the status line on its own line under the prompt box. It can't share the row with Claude Code's mode indicator ("auto mode on …").
 
@@ -143,9 +147,8 @@ agentmeter --popup                    # the popup view: r refreshes, any other k
 agentmeter setup-rex | remove-rex     # add or remove the Rex popup
 agentmeter shortcut [KEY]             # show or change the popup's shortcut
 agentmeter style [float|pane]         # open the Rex view floating or docked
-agentmeter statusline [--only claude,codex]          # one line for Claude Code's status line
-agentmeter setup-claude [--only claude,codex] [--force]   # turn that status line on
-agentmeter remove-claude                              # turn it off
+agentmeter statusline on [--only claude,codex]   # Claude Code status line on
+agentmeter statusline off | toggle | status      # off, switch, or check it
 agentmeter --version
 ```
 

@@ -15,7 +15,8 @@ Usage:
   agentmeter shortcut [KEY]                    show or change the popup's shortcut
   agentmeter style [float|pane]                open the Rex view floating or docked as a pane
   agentmeter statusline                        one line for Claude Code's statusLine setting
-  agentmeter statusline --only claude,codex    only these agents (ids: claude codex opencode gemini ...)
+  agentmeter statusline on [--only a,b] | off | toggle | status
+                                               the Claude Code status line (ids: claude codex opencode ...)
   agentmeter setup-claude [--only ...] [--force]   turn that status line on (--force replaces another one)
   agentmeter remove-claude                     turn it off
   agentmeter remove-rex                      take it out again
@@ -803,6 +804,14 @@ rex.action{
   end,
 }
 rex.bind(%(key)s, "agent_usage")
+rex.action{
+  name     = "agent_usage_statusline",
+  title    = "Toggle Agent Usage in Claude Code Status Line",
+  keywords = "agentmeter claude statusline footer bottom on off",
+  run = function(ctx, args)
+    rex.exec({ %(bin)s, "statusline", "toggle" })
+  end,
+}
 """
 
 
@@ -868,14 +877,57 @@ def setup_rex(key, remove=False, style=None):
           else f"Rex popup ready: press {key} (or run `rex do agent_usage`). Opens as: {style}.")
 
 
+PREFS = os.path.expanduser("~/.config/agentmeter/prefs.json")
+
+
+def prefs(update=None):
+    try:
+        data = json.load(open(PREFS))
+    except Exception:
+        data = {}
+    if update:
+        data.update(update)
+        os.makedirs(os.path.dirname(PREFS), exist_ok=True)
+        with open(PREFS, "w") as fh:
+            json.dump(data, fh, indent=2)
+    return data
+
+
+def claude_settings_paths():
+    return [os.path.join(cfg or os.path.expanduser("~/.claude"), "settings.json") for cfg in claude_accounts()]
+
+
+def statusline_enabled():
+    for path in claude_settings_paths():
+        try:
+            if "agentmeter" in (json.load(open(path)).get("statusLine") or {}).get("command", ""):
+                return True
+        except Exception:
+            pass
+    return False
+
+
 def setup_claude(remove=False):
     """Add (or remove) `agentmeter statusline` in every Claude Code config folder's settings.json."""
     command = f"{os.path.abspath(sys.argv[0])} statusline"
-    only = arg_after("--only", "")
+    if "--only" in sys.argv:
+        only = arg_after("--only", "")
+    elif "statusline_only" in prefs():
+        only = prefs()["statusline_only"]
+    else:                                   # set up before prefs existed: read it from settings
+        only = ""
+        for path in claude_settings_paths():
+            try:
+                m = re.search(r"--only (\S+)", (json.load(open(path)).get("statusLine") or {}).get("command", ""))
+                if m:
+                    only = m.group(1)
+                    break
+            except Exception:
+                pass
+    prefs({"statusline_only": only})
     if only:
         command += f" --only {only}"
-    for cfg in claude_accounts():
-        path = os.path.join(cfg or os.path.expanduser("~/.claude"), "settings.json")
+    for path in claude_settings_paths():
         try:
             settings = json.load(open(path)) if os.path.exists(path) else {}
         except Exception:
@@ -900,6 +952,7 @@ def setup_claude(remove=False):
             json.dump(settings, fh, indent=2)
             fh.write("\n")
         print(f"{note}: {path}")
+    print("New Claude Code sessions pick this up." if not remove else "Restart Claude Code sessions to hide it.")
 
 
 def arg_after(flag, default):
@@ -926,7 +979,18 @@ if __name__ == "__main__":
     elif cmd == "remove-claude":
         setup_claude(remove=True)
     elif cmd == "statusline":
-        statusline()
+        sub = sys.argv[2] if len(sys.argv) > 2 else ""
+        if sub == "on":
+            setup_claude()
+        elif sub == "off":
+            setup_claude(remove=True)
+        elif sub == "toggle":
+            setup_claude(remove=statusline_enabled())
+        elif sub == "status":
+            only = prefs().get("statusline_only")
+            print(("on" + (f" (only: {only})" if only else " (all agents)")) if statusline_enabled() else "off")
+        else:
+            statusline()            # called by Claude Code: print the line
     elif cmd == "--refresh":
         collect(fresh=True)
     elif cmd == "shortcut":
