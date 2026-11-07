@@ -5,10 +5,18 @@ Sources:
   claude  GET https://api.anthropic.com/api/oauth/usage  (token from Claude Code's login)
   codex   last `rate_limits` entry in ~/.codex/sessions/**/rollout-*.jsonl (local only)
 
-Usage: agentmeter [--json] [--popup]
+Usage:
+  agentmeter [--json] [--popup]               all Claude accounts + Codex
+  agentmeter --claude-config DIR               one Claude account (its CLAUDE_CONFIG_DIR)
+  agentmeter --pid PID                         the account of a running Claude Code process
+  agentmeter setup-rex [--key shift+cmd+u]   add the popup to Rex's init.lua
+  agentmeter remove-rex                      take it out again
+  agentmeter --version
 """
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
+
+VERSION = "0.1.0"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -25,28 +33,63 @@ def window(used, resets_at):
 
 
 # ---- Claude Code ---------------------------------------------------------
-def claude_token():
+# Each Claude Code login lives in a config dir: the default (~/.claude, account
+# info in ~/.claude.json) or one chosen with CLAUDE_CONFIG_DIR. On macOS its
+# token is in the Keychain item "Claude Code-credentials", plus
+# "-<first 8 hex of sha256(dir)>" for a custom dir.
+import hashlib, re
+
+
+def keychain_service(cfg):
+    base = "Claude Code-credentials"
+    return base if cfg is None else f"{base}-{hashlib.sha256(cfg.encode()).hexdigest()[:8]}"
+
+
+def read_credentials(cfg):
     if sys.platform == "darwin":
-        r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+        r = subprocess.run(["security", "find-generic-password", "-s", keychain_service(cfg), "-w"],
                            capture_output=True, text=True)
-        raw = r.stdout if r.returncode == 0 else None
-    else:
-        raw = None
-    if raw is None:
-        p = os.path.expanduser("~/.claude/.credentials.json")
-        raw = open(p).read() if os.path.exists(p) else None
-    if not raw:
-        raise RuntimeError("not logged in (run `claude`)")
-    return json.loads(raw)["claudeAiOauth"]["accessToken"]
+        if r.returncode == 0:
+            return r.stdout
+    p = os.path.join(cfg or os.path.expanduser("~/.claude"), ".credentials.json")
+    return open(p).read() if os.path.exists(p) else None
+
+
+def claude_email(cfg):
+    p = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
+    try:
+        return (json.load(open(p)).get("oauthAccount") or {}).get("emailAddress")
+    except Exception:
+        return None
+
+
+def claude_accounts():
+    """Config dirs (None = default) that have a Claude Code login."""
+    found = [None] if read_credentials(None) else []
+    for d in sorted(glob.glob(os.path.expanduser("~/.claude-*")) + glob.glob(os.path.expanduser("~/.config/claude*"))):
+        if os.path.isdir(d) and read_credentials(d):
+            found.append(d)
+    return found or [None]
+
+
+def pane_claude_dir(pid):
+    """CLAUDE_CONFIG_DIR of a running Claude Code process (None = default dir)."""
+    env = subprocess.run(["ps", "eww", "-p", str(pid), "-o", "command="], capture_output=True, text=True).stdout
+    m = re.search(r"(?:^|\s)CLAUDE_CONFIG_DIR=(\S+)", env)
+    return os.path.expanduser(m.group(1)).rstrip("/") if m else None
 
 
 def iso(ts):
     return datetime.fromisoformat(ts).timestamp() if ts else None
 
 
-def claude():
+def claude(cfg):
+    raw = read_credentials(cfg)
+    if not raw:
+        raise RuntimeError("not logged in (run `claude`)")
+    token = json.loads(raw)["claudeAiOauth"]["accessToken"]
     req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
-        "Authorization": f"Bearer {claude_token()}",
+        "Authorization": f"Bearer {token}",
         "anthropic-beta": "oauth-2025-04-20",
         "User-Agent": "agentmeter",
     })
@@ -97,87 +140,241 @@ def find_key(obj, key):
 
 
 # ---- collect + cache -----------------------------------------------------
-PROVIDERS = {"claude": claude, "codex": codex}
-
-
-def collect():
+def collect(fresh=False, claude_dirs=None):
+    """Usage per entry, keyed "claude:<dir>" / "codex". Each entry is cached for CACHE_TTL."""
+    if claude_dirs is None:
+        claude_dirs = claude_accounts()
+    jobs = [(f"claude:{d or 'default'}", "Claude Code", claude_email(d), lambda d=d: claude(d))
+            for d in claude_dirs]
+    jobs.append(("codex", "Codex", None, codex))
     try:
-        c = json.load(open(CACHE))
-        if time.time() - c["at"] < CACHE_TTL:
-            return c["data"]
+        cache = json.load(open(CACHE))
+        cache = cache if isinstance(cache, dict) and "data" not in cache else {}
     except Exception:
-        pass
-    data = {}
-    for name, fn in PROVIDERS.items():
+        cache = {}
+    data, now = {}, time.time()
+    for key, label, account, fn in jobs:
+        hit = cache.get(key)
+        if not fresh and hit and now - hit["at"] < CACHE_TTL:
+            data[key] = hit["data"]
+            continue
         try:
-            data[name] = fn()
+            v = fn()
         except Exception as e:
-            data[name] = {"error": str(e)}
+            v = {"error": str(e)}
+        v.update(label=label, account=account)
+        cache[key] = {"at": now, "data": v}
+        data[key] = v
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     with open(CACHE, "w") as fh:
-        json.dump({"at": time.time(), "data": data}, fh)
+        json.dump(cache, fh)
     return data
 
 
 # ---- render --------------------------------------------------------------
-# Minimal, theme-friendly: basic ANSI colors only (Rex maps them to its palette),
-# thin line bars, muted secondary text, title in the pane header.
-DIM, RESET = "\033[2m", "\033[0m"
+# Minimal and theme-friendly: basic ANSI colors only (Rex maps them to its
+# palette), thin line bars, muted secondary text, title in the pane header.
+DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+NAMES = {"claude": "Claude Code", "codex": "Codex"}
+WINDOWS = (("5-hour", "five_hour"), ("Weekly", "weekly"))
 
 
 def tone(left):
     return "\033[32m" if left >= 50 else "\033[33m" if left >= 20 else "\033[31m"
 
 
-def bar(w, width=18):
+def bar(w, width):
+    """Thin bar with half-cell precision: ━ full, ╸ half, ─ track."""
     if not w:
-        return f"{DIM}{'─' * width}   –{RESET}"
-    n = round(w["left"] / 100 * width)
-    return f"{tone(w['left'])}{'━' * n}{RESET}{DIM}{'─' * (width - n)}{RESET} {w['left']:4.0f}%"
+        return f"{DIM}{'─' * width}{RESET}"
+    halves = round(w["left"] / 100 * width * 2)
+    full, half = divmod(halves, 2)
+    filled = "━" * full + ("╸" if half else "")
+    return f"{tone(w['left'])}{filled}{RESET}{DIM}{'─' * (width - len(filled))}{RESET}"
 
 
-def until(ts):
+def reset_text(ts):
     if not ts:
         return ""
-    s = int(ts - time.time())
-    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
-    return f"{d}d {h}h" if d else f"{h}h {m:02d}m"
+    secs = ts - time.time()
+    if secs < 86400:
+        h, m = int(secs // 3600), int(secs % 3600 // 60)
+        return f"resets in {h}h {m:02d}m" if h else f"resets in {m}m"
+    return "resets " + time.strftime("%a %H:%M", time.localtime(ts))
 
 
-def render(data):
-    print("\033]2;Agent usage\007", end="")  # pane header title
-    print()
+def visible_len(text):
+    import re
+    return len(re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", text))
+
+
+def lines_for(data, width):
+    bar_w = max(10, min(28, width - 44))
+    out = []
     for name, u in data.items():
+        title = u.get("label") or NAMES.get(name, name)
+        if u.get("account"):
+            title += f"{RESET}  {DIM}{u['account']}"
         if "error" in u:
-            print(f"  {name:<7} {DIM}{u['error']}{RESET}\n")
+            out += [f"{DIM}●{RESET} {BOLD}{title}{RESET}", f"  {DIM}{u['error']}{RESET}", ""]
             continue
-        for i, (label, key) in enumerate((("5h", "five_hour"), ("wk", "weekly"))):
+        lefts = [u[k]["left"] for _, k in WINDOWS if u.get(k)]
+        dot = f"{tone(min(lefts))}●{RESET}" if lefts else f"{DIM}●{RESET}"
+        note = f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}" if "as_of" in u else ""
+        out.append(f"{dot} {BOLD}{title}{RESET}{note}")
+        for label, key in WINDOWS:
             w = u.get(key)
-            head = f"{name:<7}" if i == 0 else " " * 7
-            print(f"  {head} {DIM}{label}{RESET}  {bar(w)}  {DIM}{until(w and w['resets_at'])}{RESET}")
-        if "as_of" in u:
-            print(f"  {' ' * 7} {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}")
-        print()
+            pct = f"{tone(w['left'])}{w['left']:3.0f}%{RESET}" if w else f"{DIM}  –{RESET} "
+            out.append(f"  {DIM}{label:<7}{RESET} {bar(w, bar_w)}  {pct}  {DIM}{reset_text(w and w['resets_at'])}{RESET}")
+        out.append("")
+    return out
 
 
-def wait_key():
+def render(data, popup=False):
+    import shutil
+    cols, rows = shutil.get_terminal_size((80, 24))
+    body = lines_for(data, cols)
+    if not popup:
+        print("\n" + "\n".join("  " + l for l in body))
+        return
+    body.append(f"{DIM}updated {time.strftime('%H:%M')}   r refresh   any key close{RESET}")
+    pad_left = max(2, (cols - max(visible_len(l) for l in body)) // 2)
+    pad_top = max(1, (rows - len(body)) // 2)
+    print("\033]2;Agent usage\007\033[?25l\033[H\033[2J" + "\n" * pad_top, end="")
+    print("\n".join(" " * pad_left + l for l in body), end="", flush=True)
+
+
+def read_key():
     import termios, tty
-    print("\033[?25l", end="", flush=True)  # hide cursor; any key closes
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
-        os.read(fd, 1)
+        return os.read(fd, 1)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def popup(claude_dirs=None):
+    try:
+        data = collect(claude_dirs=claude_dirs)
+        while True:
+            render(data, popup=True)
+            if read_key() not in (b"r", b"R"):
+                break
+            data = collect(fresh=True, claude_dirs=claude_dirs)
+    finally:
         print("\033[?25h", end="", flush=True)
 
 
+# ---- Rex integration -----------------------------------------------------
+REX_BEGIN, REX_END = "-- >>> agentmeter >>>", "-- <<< agentmeter <<<"
+REX_SNIPPET = """\
+-- agentmeter: popup with Claude Code / Codex 5h + weekly usage remaining.
+-- Managed by `agentmeter setup-rex` / `agentmeter remove-rex`.
+rex.action{
+  name     = "agent_usage",
+  title    = "Show Agent Usage",
+  keywords = "claude codex limits quota usage",
+  run = function(ctx, args)
+    local cmd = { %(bin)s, "--popup" }
+    -- If the focused pane is running Claude Code, show that pane's account.
+    local proc = rex.block.call("com.superlogical.terminal", "process", { block_id = ctx.block_id })
+    local fg = proc and proc.foreground
+    if fg and fg.pid then
+      local id = ((fg.argv0 or "") .. " " .. (fg.invoked_path or "") .. " " .. (fg.path or "")):lower()
+      if id:find("claude", 1, true) then
+        table.insert(cmd, "--pid")
+        table.insert(cmd, tostring(math.floor(fg.pid)))
+      end
+    end
+    return rex.session.new_layer{
+      session_id = ctx.session_id,
+      bounds = { 0.3, 0.28, 0.4, 0.34 },
+      focus  = true,
+      layout = rex.layout.block{
+        flavor  = "com.superlogical.terminal.shell",
+        options = { command = cmd },
+      },
+    }
+  end,
+}
+rex.bind(%(key)s, "agent_usage")
+"""
+
+
+def rex_config_path():
+    if os.environ.get("REX_CONFIG"):
+        return os.environ["REX_CONFIG"]
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "rex", "init.lua")
+
+
+def rex(*args):
+    try:
+        return subprocess.run(["rex", *args], capture_output=True, text=True).returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def strip_block(text):
+    out, skip = [], False
+    for line in text.splitlines(keepends=True):
+        if line.rstrip("\n") == REX_BEGIN:
+            skip = True
+        if not skip:
+            out.append(line)
+        if line.rstrip("\n") == REX_END:
+            skip = False
+    return "".join(out).rstrip("\n") + "\n" if out else ""
+
+
+def setup_rex(key, remove=False):
+    path = rex_config_path()
+    old = open(path).read() if os.path.exists(path) else ""
+    new = strip_block(old)
+    if not remove:
+        # The path this command was run as, e.g. /opt/homebrew/bin/agentmeter, not a versioned Cellar path.
+        bin_path = os.path.abspath(sys.argv[0])
+        block = REX_SNIPPET % {"bin": json.dumps(bin_path), "key": json.dumps(key)}
+        new = (new + "\n" if new else "") + f"{REX_BEGIN}\n{block}{REX_END}\n"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as fh:
+        fh.write(new)
+    if old and not remove and not rex("config", "check"):
+        with open(path, "w") as fh:
+            fh.write(old)
+        sys.exit("Rex rejected the config; init.lua was left unchanged. Run `rex config check`.")
+    rex("config", "reload")
+    print(f"Removed the agentmeter popup from {path}." if remove
+          else f"Rex popup ready: press {key} (or run `rex do agent_usage`).")
+
+
+def arg_after(flag, default):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv[:-1] else default
+
+
 if __name__ == "__main__":
-    data = collect()
-    if "--json" in sys.argv:
-        print(json.dumps(data, indent=2))
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "--version":
+        print(f"agentmeter {VERSION}")
+    elif cmd == "setup-rex":
+        setup_rex(arg_after("--key", "shift+cmd+u"))
+    elif cmd == "remove-rex":
+        setup_rex(None, remove=True)
+    elif cmd in ("-h", "--help"):
+        print(__doc__.strip())
     else:
-        render(data)
+        dirs = None
+        if "--pid" in sys.argv:          # popup opened from a pane running Claude Code
+            dirs = [pane_claude_dir(arg_after("--pid", ""))]
+        elif "--claude-config" in sys.argv:
+            dirs = [os.path.expanduser(arg_after("--claude-config", "")).rstrip("/") or None]
         if "--popup" in sys.argv:
-            wait_key()
+            popup(dirs)
+            sys.exit()
+        data = collect(claude_dirs=dirs)
+        if "--json" in sys.argv:
+            print(json.dumps(data, indent=2))
+        else:
+            render(data)
