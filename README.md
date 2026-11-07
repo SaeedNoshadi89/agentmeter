@@ -8,6 +8,8 @@ See how much of your coding agents' usage limits is left, from the terminal or a
 
 <img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="420">
 
+> If agentmeter saves you from hitting a limit mid-task, please **[⭐ star the repo](https://github.com/SaeedNoshadi89/agentmeter)**. It's the quickest way to help, and it brings us closer to `brew install agentmeter` without a tap. See [Contributing](#contributing).
+
 Each bar shows the share left. Every agent and every window uses the same colors:
 
 | Left | Color |
@@ -127,6 +129,17 @@ Notes:
 ## Privacy
 
 Each token or key is sent only to its own service: Claude tokens to `api.anthropic.com` and OpenRouter keys to `openrouter.ai`. agentmeter never logs or stores them, and never sends them anywhere else. Apart from the icon downloads, nothing else leaves your machine.
+
+## Contributing
+
+agentmeter is small and easy to extend, and help is welcome.
+
+- **⭐ Star the repo.** Homebrew only accepts popular projects into its main repository, at roughly 75+ stars. Every star brings `brew install agentmeter` with no tap step closer.
+- **Add an agent.** Each agent is a single row in `AGENTS` in [`agentmeter`](agentmeter): a check for whether it's installed, and a function that returns its meters. Many agents are listed but don't show usage yet, including Gemini CLI, Cursor Agent, Amp, Copilot CLI, Qwen Code, Crush, Factory Droid and Aider. If you know where one keeps its limits, a pull request would be great.
+- **Report a problem.** [Open an issue](https://github.com/SaeedNoshadi89/agentmeter/issues) with your OS, terminal, agent and what you saw. `agentmeter --json` output helps, but remove your email first.
+- **Share a screenshot.** `agentmeter --demo --popup` shows made-up accounts, so it's safe to post.
+
+Pull requests should keep agentmeter dependency-free: one Python file using only the standard library.
 
 ## License
 
