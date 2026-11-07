@@ -28,7 +28,7 @@ Usage:
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -554,10 +554,19 @@ def bar(m, width):
     return f"{tone(m['left'])}{filled}{RESET}{DIM}{'─' * (width - len(filled))}{RESET}"
 
 
+def current(m):
+    """A meter as it is now: once its reset time has passed, the window is fresh again."""
+    if m.get("resets_at") and m["resets_at"] <= time.time():
+        return dict(m, used=0.0, left=100.0, resets_at=None)
+    return m
+
+
 def reset_text(ts):
     if not ts:
         return ""
     secs = ts - time.time()
+    if secs <= 0:
+        return ""
     if secs < 86400:
         h, m = int(secs // 3600), int(secs % 3600 // 60)
         return f"resets in {h}h {m:02d}m" if h else f"resets in {m}m"
@@ -587,7 +596,7 @@ def lines_for(data, bar_w):
         out.append(f"{icon(aid, muted=quiet)}{title}")
         if "error" in u or u.get("note"):
             out.append(f"    {DIM}{u.get('error') or u['note']}{RESET}")
-        for m in u.get("meters", []):
+        for m in map(current, u.get("meters", [])):
             extra = "  ".join(x for x in (m.get("detail"), reset_text(m.get("resets_at"))) if x)
             out.append(f"    {DIM}{SHORT.get(m['label'], m['label']):<6}{RESET}{bar(m, bar_w)}  "
                        f"{tone(m['left'])}{m['left']:3.0f}%{RESET}  {DIM}{extra}{RESET}")
@@ -703,12 +712,14 @@ def statusline():
         mine = "claude:personal"
     cache, now = load_cache(), time.time()
     view = cached_view()
-    if any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
+    reset_passed = any(m.get("resets_at") and m["resets_at"] <= now
+                       for u in view.values() for m in u.get("meters", []))
+    if reset_passed or any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
         refresh_in_background()
 
     def short(u):
         parts = []
-        for m in u.get("meters", []):
+        for m in map(current, u.get("meters", [])):
             label = SHORT.get(m["label"], m["label"])
             reset = reset_text(m.get("resets_at")).replace("resets in ", "").replace("resets ", "")
             reset = f"({reset})" if reset and m["left"] < 50 else ""
