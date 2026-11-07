@@ -15,7 +15,9 @@ Usage:
   agentmeter shortcut [KEY]                    show or change the popup's shortcut
   agentmeter style [float|pane]                open the Rex view floating or docked as a pane
   agentmeter statusline                        one line for Claude Code's statusLine setting
-  agentmeter setup-claude | remove-claude      turn that status line on or off
+  agentmeter statusline --only claude,codex    only these agents (ids: claude codex opencode gemini ...)
+  agentmeter setup-claude [--only ...] [--force]   turn that status line on (--force replaces another one)
+  agentmeter remove-claude                     turn it off
   agentmeter remove-rex                      take it out again
   agentmeter --no-icons                        text marks instead of the agents' icons
   agentmeter --demo [--popup]                  made-up accounts and numbers, for screenshots
@@ -636,9 +638,12 @@ def statusline():
                          + (f" {DIM}{reset}{RESET}" if reset else ""))
         return f" {DIM}·{RESET} ".join(parts)
 
+    only = [a.strip() for a in arg_after("--only", "").split(",") if a.strip()]
     out = []
     for key in sorted(view, key=lambda k: k != mine):
         u = view[key]
+        if only and u.get("agent") not in only:
+            continue
         if key.startswith("claude:") and key != mine and mine in view:
             continue                                    # other Claude accounts: only in the popup
         color, mark = ICONS.get(u.get("agent"), ("", "◆ "))
@@ -849,6 +854,9 @@ def setup_rex(key, remove=False, style=None):
 def setup_claude(remove=False):
     """Add (or remove) `agentmeter statusline` in every Claude Code config folder's settings.json."""
     command = f"{os.path.abspath(sys.argv[0])} statusline"
+    only = arg_after("--only", "")
+    if only:
+        command += f" --only {only}"
     for cfg in claude_accounts():
         path = os.path.join(cfg or os.path.expanduser("~/.claude"), "settings.json")
         try:
@@ -862,7 +870,7 @@ def setup_claude(remove=False):
                 continue
             settings.pop("statusLine")
             note = "removed"
-        elif current and "agentmeter" not in current:
+        elif current and "agentmeter" not in current and "--force" not in sys.argv:
             print(f"skipped {path}: it already has a status line ({current})")
             continue
         else:

@@ -118,7 +118,18 @@ agentmeter setup-claude     # turn it on for every Claude config folder
 agentmeter remove-claude    # turn it off
 ```
 
-This sets `statusLine` in each `settings.json` and saves a backup as `settings.json.bak`. A folder that already has a different status line is left alone. The status line reads cached numbers only, so it takes about 80 ms. Numbers older than a minute are refreshed in the background.
+Choose which agents appear with `--only`, using agent ids such as `claude`, `codex`, `opencode` and `gemini`:
+
+```sh
+agentmeter setup-claude --only claude          # just this session's Claude account
+agentmeter setup-claude --only claude,codex    # Claude and Codex
+```
+
+Run it again to change your choice. Use `--force` to replace a status line you set up yourself.
+
+Claude Code puts the status line on its own line under the prompt box. It can't share the row with Claude Code's mode indicator ("auto mode on …").
+
+This sets `statusLine` in each `settings.json` and saves a backup as `settings.json.bak`. A folder that already has a different status line is left alone unless you add `--force`. The status line reads cached numbers only, so it takes about 80 ms. Numbers older than a minute are refreshed in the background.
 
 ## Usage
 
