@@ -28,12 +28,19 @@ gh release create "v$version" --verify-tag --title "agentmeter $version" --notes
 brew install SaeedNoshadi89/tap/agentmeter     # or: brew upgrade agentmeter
 \`\`\`"
 
-# 3. Homebrew formula
-sleep 3
-sha=$(curl -fsSL "https://github.com/$repo/archive/refs/tags/v$version.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+# 3. Homebrew formula (Git sources are pinned to the release commit).
+revision=$(git rev-parse "v$version^{commit}")
 cd "$tap_dir"
 git pull -q
-sed -i '' -E "s|archive/refs/tags/v[0-9.]+\.tar\.gz|archive/refs/tags/v$version.tar.gz|; s/sha256 \"[0-9a-f]{64}\"/sha256 \"$sha\"/" Formula/agentmeter.rb
+if grep -q 'agentmeter.git"' Formula/agentmeter.rb; then
+  sed -i '' -E "s/tag: \"v[0-9.]+\"/tag: \"v$version\"/; s/revision: \"[0-9a-f]{40}\"/revision: \"$revision\"/; s/^  version \"[0-9.]+\"/  version \"$version\"/" Formula/agentmeter.rb
+else
+  archive=$(mktemp)
+  trap 'rm -f "$archive"' EXIT
+  curl -fsSL "https://github.com/$repo/archive/refs/tags/v$version.tar.gz" -o "$archive"
+  sha=$(shasum -a 256 "$archive" | cut -d' ' -f1)
+  sed -i '' -E "s|archive/refs/tags/v[0-9.]+\.tar\.gz|archive/refs/tags/v$version.tar.gz|; s/sha256 \"[0-9a-f]{64}\"/sha256 \"$sha\"/" Formula/agentmeter.rb
+fi
 git commit -qam "agentmeter $version"
 git push -q
 
