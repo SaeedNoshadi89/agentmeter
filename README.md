@@ -143,8 +143,9 @@ agentmeter --popup                    # the popup view: r refreshes, any other k
 agentmeter setup-rex | remove-rex     # add or remove the Rex popup
 agentmeter shortcut [KEY]             # show or change the popup's shortcut
 agentmeter style [float|pane]         # open the Rex view floating or docked
-agentmeter statusline                 # one line for Claude Code's status line
-agentmeter setup-claude | remove-claude   # turn that status line on or off
+agentmeter statusline [--only claude,codex]          # one line for Claude Code's status line
+agentmeter setup-claude [--only claude,codex] [--force]   # turn that status line on
+agentmeter remove-claude                              # turn it off
 agentmeter --version
 ```
 
