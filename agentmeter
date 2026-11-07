@@ -28,7 +28,7 @@ Usage:
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -384,9 +384,12 @@ def collect(fresh=False, claude_dirs=None):
         data[key] = entry["data"]
         if new:
             cache[key] = entry
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    with open(CACHE, "w") as fh:
-        json.dump(cache, fh)
+    try:                                   # a read-only sandbox can't save the cache: carry on
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        with open(CACHE, "w") as fh:
+            json.dump(cache, fh)
+    except OSError:
+        pass
     return data
 
 
@@ -707,7 +710,10 @@ def refresh_in_background():
             return
     except OSError:
         pass
-    open(stamp, "w").close()
+    try:
+        open(stamp, "w").close()
+    except OSError:
+        return                             # can't write here (sandbox): skip the background refresh
     subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--refresh"],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)

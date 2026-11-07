@@ -30,6 +30,7 @@ agentmeter setup
 - [Where the numbers come from](#where-the-numbers-come-from)
 - [Privacy](#privacy)
 - [Troubleshooting](#troubleshooting)
+- [Agent skill](#agent-skill)
 - [Contributing](#contributing)
 
 ## Four ways to see your usage
@@ -329,6 +330,12 @@ To share a screenshot safely, use `--demo`, which shows made-up accounts and num
 
 Still stuck? **[Open an issue](https://github.com/SaeedNoshadi89/agentmeter/issues).** That's how agentmeter gets better.
 
+## Agent skill
+
+Ask your agent "How much Claude Code or Codex usage do I have left?" and get the answer in chat. The skill in [`skills/agentmeter`](skills/agentmeter) runs AgentMeter on your computer and removes account emails, file paths and tokens before the agent sees the output. It needs AgentMeter installed, and an agent that can run local commands, such as Claude Code or Codex CLI.
+
+To install it by hand, copy the `skills/agentmeter` folder into your agent's skills folder, such as `~/.claude/skills/`. See the [skill's README](skills/agentmeter/README.md) for details.
+
 ## Contributing
 
 **Feel free to open issues and contribute. All help is welcome, big or small.**
@@ -346,6 +353,7 @@ git clone https://github.com/SaeedNoshadi89/agentmeter.git
 cd agentmeter
 ./agentmeter --demo          # try changes with made-up data
 tests/cli.sh ./agentmeter    # run the CLI tests (your real config is never changed)
+python3 tests/skill.py       # run the skill tests (fake data, no logins)
 ./install.sh                 # install your local copy
 ```
 
