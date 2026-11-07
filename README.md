@@ -26,8 +26,11 @@ The Rex popup sizes itself to fit what it shows. Press **r** to refresh, or any 
 
 **Homebrew**
 
+Add the tap once, then install and upgrade like any other formula (`brew upgrade agentmeter`).
+
 ```sh
-brew install SaeedNoshadi89/tap/agentmeter
+brew tap SaeedNoshadi89/tap
+brew install agentmeter
 agentmeter setup-rex        # optional: add the Rex popup (Shift+Cmd+U)
 ```
 

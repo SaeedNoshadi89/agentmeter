@@ -1,5 +1,5 @@
 #!/bin/sh
-# agentmeter installer (or: brew install SaeedNoshadi89/tap/agentmeter)
+# agentmeter installer (or: brew tap SaeedNoshadi89/tap && brew install agentmeter)
 #   curl -fsSL https://raw.githubusercontent.com/SaeedNoshadi89/agentmeter/main/install.sh | sh
 #
 # Options (environment variables):
