@@ -29,8 +29,10 @@ t c2 "$A" --claude-config /nonexistent --json; [[ $out == *"not logged in"* ]] &
 echo "status line"
 t s1 sh -c "echo '{}' | env -u CLAUDE_CONFIG_DIR '$A' statusline"; [[ $code == 0 && $(echo "$out"|strip) == *"✻"* ]] && ok "statusline prints a line" || no statusline "$out"
 a=$(echo '{}' | env -u CLAUDE_CONFIG_DIR "$A" statusline --only claude | strip); b=$(echo '{}' | CLAUDE_CONFIG_DIR="$HOME/.claude-personal" "$A" statusline --only claude | strip)
-if [[ $a == *retrying* || $b == *retrying* || $a == *"not logged in"* ]]; then
-  printf '  skip  %s\n' "statusline follows the session's account (an account has no numbers right now)"
+e1=$(python3 -c 'import json,os;print((json.load(open(os.path.expanduser("~/.claude.json"))).get("oauthAccount") or {}).get("emailAddress"))' 2>/dev/null)
+e2=$(python3 -c 'import json,os;print((json.load(open(os.path.expanduser("~/.claude-personal/.claude.json"))).get("oauthAccount") or {}).get("emailAddress"))' 2>/dev/null)
+if [[ $a == *retrying* || $b == *retrying* || $a == *"not logged in"* || $e1 == "$e2" ]]; then
+  printf '  skip  %s\n' "statusline follows the session's account (needs two different accounts with numbers)"
 else
   [[ -n $a && -n $b && $a != "$b" ]] && ok "statusline follows the session's account" || no "statusline account" "default=$a personal=$b"
 fi

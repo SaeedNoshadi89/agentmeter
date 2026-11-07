@@ -99,6 +99,16 @@ def read_credentials(cfg):
     return open(p).read() if os.path.exists(p) else None
 
 
+def claude_account_id(cfg):
+    """The Anthropic account behind a config folder, to spot two folders signed in to one account."""
+    p = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
+    try:
+        a = json.load(open(p)).get("oauthAccount") or {}
+        return a.get("accountUuid") or a.get("emailAddress")
+    except Exception:
+        return None
+
+
 def claude_email(cfg):
     p = os.path.join(cfg, ".claude.json") if cfg else os.path.expanduser("~/.claude.json")
     try:
@@ -282,7 +292,12 @@ def jobs_for(claude_dirs):
         if aid == "claude":
             if claude_dirs is None and not detect():
                 continue
+            seen = set()
             for d in (claude_dirs if claude_dirs is not None else claude_accounts()):
+                acct = claude_account_id(d)
+                if acct and acct in seen:
+                    continue                    # same account as a folder already listed
+                seen.add(acct)
                 jobs.append((f"claude:{d or 'default'}", aid, name, claude_email(d), lambda d=d: claude(d)))
         elif detect():
             for suffix, account, fetch in entries():
@@ -712,6 +727,10 @@ def statusline():
         mine = "claude:personal"
     cache, now = load_cache(), time.time()
     view = cached_view()
+    if mine not in view and "--demo" not in sys.argv:
+        email = claude_email(os.path.expanduser(cfg).rstrip("/") if cfg else None)
+        mine = next((k for k, u in view.items() if k.startswith("claude:") and email
+                     and u.get("account") == email), mine)
     reset_passed = any(m.get("resets_at") and m["resets_at"] <= now
                        for u in view.values() for m in u.get("meters", []))
     if reset_passed or any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
