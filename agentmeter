@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""agentmeter: how much of your 5-hour and weekly agent limits is left.
+
+Sources:
+  claude  GET https://api.anthropic.com/api/oauth/usage  (token from Claude Code's login)
+  codex   last `rate_limits` entry in ~/.codex/sessions/**/rollout-*.jsonl (local only)
+
+Usage: agentmeter [--json] [--popup]
+"""
+import glob, json, os, subprocess, sys, time, urllib.request
+from datetime import datetime, timezone
+
+CACHE = os.path.expanduser("~/.cache/agentmeter.json")
+CACHE_TTL = 60
+
+
+def window(used, resets_at):
+    """Normalise to {used, left, resets_at(epoch)}; a past reset means the window is fresh."""
+    if used is None:
+        return None
+    if resets_at and resets_at < time.time():
+        used, resets_at = 0.0, None
+    used = max(0.0, min(100.0, float(used)))
+    return {"used": used, "left": 100.0 - used, "resets_at": resets_at}
+
+
+# ---- Claude Code ---------------------------------------------------------
+def claude_token():
+    if sys.platform == "darwin":
+        r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+                           capture_output=True, text=True)
+        raw = r.stdout if r.returncode == 0 else None
+    else:
+        raw = None
+    if raw is None:
+        p = os.path.expanduser("~/.claude/.credentials.json")
+        raw = open(p).read() if os.path.exists(p) else None
+    if not raw:
+        raise RuntimeError("not logged in (run `claude`)")
+    return json.loads(raw)["claudeAiOauth"]["accessToken"]
+
+
+def iso(ts):
+    return datetime.fromisoformat(ts).timestamp() if ts else None
+
+
+def claude():
+    req = urllib.request.Request("https://api.anthropic.com/api/oauth/usage", headers={
+        "Authorization": f"Bearer {claude_token()}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "agentmeter",
+    })
+    try:
+        d = json.load(urllib.request.urlopen(req, timeout=8))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError("login expired (run `claude`)" if e.code == 401 else f"HTTP {e.code}")
+    f, w = d.get("five_hour") or {}, d.get("seven_day") or {}
+    return {"five_hour": window(f.get("utilization"), iso(f.get("resets_at"))),
+            "weekly": window(w.get("utilization"), iso(w.get("resets_at")))}
+
+
+# ---- Codex ---------------------------------------------------------------
+def codex():
+    files = sorted(glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/rollout-*.jsonl")),
+                   key=os.path.getmtime, reverse=True)
+    for path in files[:20]:  # newest session that has rate-limit data
+        last = None
+        with open(path, errors="ignore") as fh:
+            for line in fh:
+                if '"rate_limits"' in line:
+                    last = line
+        if not last:
+            continue
+        rl = find_key(json.loads(last), "rate_limits")
+        if not rl:
+            continue
+        out = {"five_hour": None, "weekly": None, "as_of": os.path.getmtime(path)}
+        for slot in ("primary", "secondary"):
+            s = rl.get(slot) or {}
+            key = "five_hour" if s.get("window_minutes", 0) <= 300 else "weekly"
+            out[key] = window(s.get("used_percent"), s.get("resets_at"))
+        return out
+    raise RuntimeError("no Codex session data yet")
+
+
+def find_key(obj, key):
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj[key]
+        obj = obj.values()
+    if isinstance(obj, (list, type({}.values()))):
+        for v in obj:
+            r = find_key(v, key)
+            if r:
+                return r
+    return None
+
+
+# ---- collect + cache -----------------------------------------------------
+PROVIDERS = {"claude": claude, "codex": codex}
+
+
+def collect():
+    try:
+        c = json.load(open(CACHE))
+        if time.time() - c["at"] < CACHE_TTL:
+            return c["data"]
+    except Exception:
+        pass
+    data = {}
+    for name, fn in PROVIDERS.items():
+        try:
+            data[name] = fn()
+        except Exception as e:
+            data[name] = {"error": str(e)}
+    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+    with open(CACHE, "w") as fh:
+        json.dump({"at": time.time(), "data": data}, fh)
+    return data
+
+
+# ---- render --------------------------------------------------------------
+# Minimal, theme-friendly: basic ANSI colors only (Rex maps them to its palette),
+# thin line bars, muted secondary text, title in the pane header.
+DIM, RESET = "\033[2m", "\033[0m"
+
+
+def tone(left):
+    return "\033[32m" if left >= 50 else "\033[33m" if left >= 20 else "\033[31m"
+
+
+def bar(w, width=18):
+    if not w:
+        return f"{DIM}{'─' * width}   –{RESET}"
+    n = round(w["left"] / 100 * width)
+    return f"{tone(w['left'])}{'━' * n}{RESET}{DIM}{'─' * (width - n)}{RESET} {w['left']:4.0f}%"
+
+
+def until(ts):
+    if not ts:
+        return ""
+    s = int(ts - time.time())
+    d, h, m = s // 86400, s % 86400 // 3600, s % 3600 // 60
+    return f"{d}d {h}h" if d else f"{h}h {m:02d}m"
+
+
+def render(data):
+    print("\033]2;Agent usage\007", end="")  # pane header title
+    print()
+    for name, u in data.items():
+        if "error" in u:
+            print(f"  {name:<7} {DIM}{u['error']}{RESET}\n")
+            continue
+        for i, (label, key) in enumerate((("5h", "five_hour"), ("wk", "weekly"))):
+            w = u.get(key)
+            head = f"{name:<7}" if i == 0 else " " * 7
+            print(f"  {head} {DIM}{label}{RESET}  {bar(w)}  {DIM}{until(w and w['resets_at'])}{RESET}")
+        if "as_of" in u:
+            print(f"  {' ' * 7} {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}")
+        print()
+
+
+def wait_key():
+    import termios, tty
+    print("\033[?25l", end="", flush=True)  # hide cursor; any key closes
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        os.read(fd, 1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        print("\033[?25h", end="", flush=True)
+
+
+if __name__ == "__main__":
+    data = collect()
+    if "--json" in sys.argv:
+        print(json.dumps(data, indent=2))
+    else:
+        render(data)
+        if "--popup" in sys.argv:
+            wait_key()
