@@ -302,9 +302,9 @@ def reset_text(ts):
     secs = ts - time.time()
     if secs < 86400:
         h, m = int(secs // 3600), int(secs % 3600 // 60)
-        return f"resets in {h}h {m:02d}m" if h else f"resets in {m}m"
+        return f"↻ {h}h {m:02d}m" if h else f"↻ {m}m"
     fmt = "%a %H:%M" if secs < 6 * 86400 else "%b %d"
-    return "resets " + time.strftime(fmt, time.localtime(ts))
+    return "↻ " + time.strftime(fmt, time.localtime(ts))
 
 
 def visible_len(text):
@@ -312,8 +312,10 @@ def visible_len(text):
     return len(re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", text))
 
 
-def lines_for(data, width):
-    bar_w = max(10, min(28, width - 50))
+SHORT = {"5-hour": "5h", "Weekly": "week", "Monthly": "month", "Daily": "day", "Budget": "budget"}
+
+
+def lines_for(data, bar_w):
     out = []
     for u in data.values():
         aid = u.get("agent", "")
@@ -328,7 +330,7 @@ def lines_for(data, width):
             out.append(f"   {DIM}{u.get('error') or u['note']}{RESET}")
         for m in u.get("meters", []):
             extra = "  ".join(x for x in (m.get("detail"), reset_text(m.get("resets_at"))) if x)
-            out.append(f"   {DIM}{m['label']:<7}{RESET} {bar(m, bar_w)}  "
+            out.append(f"   {DIM}{SHORT.get(m['label'], m['label']):<6}{RESET}{bar(m, bar_w)}  "
                        f"{tone(m['left'])}{m['left']:3.0f}%{RESET}  {DIM}{extra}{RESET}")
         out.append("")
     return out
@@ -336,16 +338,55 @@ def lines_for(data, width):
 
 def render(data, popup=False):
     import shutil
-    cols, rows = shutil.get_terminal_size((80, 24))
-    body = lines_for(data, cols)
     if not popup:
+        cols = shutil.get_terminal_size((80, 24)).columns
+        body = lines_for(data, max(10, min(28, cols - 50)))
         print("\n" + "\n".join("  " + l for l in body))
         return
-    body.append(f"{DIM}updated {time.strftime('%H:%M')}   r refresh   any key close{RESET}")
-    pad_left = max(2, (cols - max(visible_len(l) for l in body)) // 2)
-    pad_top = max(1, (rows - len(body)) // 2)
-    print("\033]2;Agent usage\007\033[?25l\033[H\033[2J" + "\n" * pad_top, end="")
-    print("\n".join(" " * pad_left + l for l in body), end="", flush=True)
+    body = lines_for(data, 16)
+    while body and not body[-1]:
+        body.pop()
+    fit_rex_layer(len(body) + 2, max(visible_len(l) for l in body) + 4)
+    print("\033]2;Agent usage\007\033[?25l\033[H\033[2J\n", end="")
+    print("\n".join("  " + l for l in body), end="", flush=True)
+
+
+def rex_api(method, args):
+    """Call the Rex server API from inside a Rex pane; None when not in Rex."""
+    import shutil
+    bin_dir = os.environ.get("REX_BIN_DIR", "")
+    rex_bin = os.path.join(bin_dir, "rex") if os.path.exists(os.path.join(bin_dir, "rex")) else shutil.which("rex")
+    if not rex_bin or not os.environ.get("REX_SESSION"):
+        return None
+    r = subprocess.run([rex_bin, "api", "call", "-s", os.environ["REX_SESSION"], method, json.dumps(args)],
+                       capture_output=True, text=True, timeout=3)
+    return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
+
+
+def fit_rex_layer(rows_needed, cols_needed):
+    """Shrink the popup's floating layer to fit its content, centred in the window."""
+    block = os.environ.get("REX_BLOCK")
+    if not block:
+        return
+    try:
+        for _ in range(3):  # the pane header isn't counted in rows, so converge in a few steps
+            view = rex_api("session.view", {}) or {}
+            layer = next((l for w in view.get("windows", []) for l in w.get("layers", [])
+                          if l.get("kind") != "tiled" and any(b.get("block_id") == block for b in l.get("blocks", []))),
+                         None)
+            if not layer:
+                return
+            _, _, w, h = layer["bounds"]
+            cols, rows = os.get_terminal_size()
+            if rows == rows_needed and abs(cols - cols_needed) <= 1:
+                return
+            nw = min(0.95, w * cols_needed / cols)
+            nh = min(0.95, h * rows_needed / rows)
+            rex_api("session.resize_layer", {"layer_id": layer["layer_id"],
+                                             "bounds": [(1 - nw) / 2, (1 - nh) / 2.5, nw, nh]})
+            time.sleep(0.12)
+    except Exception:
+        pass
 
 
 def read_key():

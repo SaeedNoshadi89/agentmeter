@@ -2,7 +2,7 @@
 
 See how much of your coding agents' usage limits is left, from the terminal or as a popup in [Rex](https://www.superlogical.com/rex). agentmeter finds the agents installed on your machine and lists each one: Claude Code and Codex with their **5-hour** and **weekly** limits, OpenCode with its provider's budget, and more.
 
-<img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="640">
+<img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="420">
 
 Each bar shows the share left. Every agent and every window uses the same colors:
 
@@ -12,7 +12,7 @@ Each bar shows the share left. Every agent and every window uses the same colors
 | under 50% | orange |
 | under 30% | red |
 
-In the popup, press **r** to refresh and any other key to close.
+The Rex popup sizes itself to fit what it shows. Press **r** to refresh, or any other key to close it. `↻` marks when a limit resets.
 
 ## Install
 
