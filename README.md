@@ -339,6 +339,8 @@ tests/cli.sh ./agentmeter    # run the CLI tests (your real config is never chan
 
 Please keep agentmeter dependency-free: one Python file using only the standard library.
 
+Maintainers release with `scripts/release.sh VERSION "summary"` after setting `VERSION` in `agentmeter`. It tags the release, publishes it on GitHub, updates the Homebrew formula and checks that it installs.
+
 ## License
 
 MIT
