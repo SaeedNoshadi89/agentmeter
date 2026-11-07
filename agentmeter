@@ -11,6 +11,7 @@ Usage:
   agentmeter [--json] [--popup]               every agent found
   agentmeter --claude-config DIR               one Claude account (its CLAUDE_CONFIG_DIR)
   agentmeter --pid PID                         the account of a running Claude Code process
+  agentmeter setup [--yes]                     set everything up in one step (asks first)
   agentmeter setup-rex [--key shift+cmd+u]   add the popup to Rex's init.lua
   agentmeter shortcut [KEY]                    show or change the popup's shortcut
   agentmeter style [float|pane]                open the Rex view floating or docked as a pane
@@ -27,7 +28,7 @@ Usage:
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -106,7 +107,29 @@ def claude_email(cfg):
         return None
 
 
+ACCOUNTS_CACHE = os.path.expanduser("~/.cache/agentmeter/accounts.json")
+
+
 def claude_accounts():
+    """Config dirs (None = default) that have a Claude Code login. Remembered for an hour,
+    so opening the popup doesn't wait on Keychain reads."""
+    try:
+        cached = json.load(open(ACCOUNTS_CACHE))
+        if time.time() - cached["at"] < 3600:
+            return cached["dirs"]
+    except Exception:
+        pass
+    dirs = find_claude_accounts()
+    try:
+        os.makedirs(os.path.dirname(ACCOUNTS_CACHE), exist_ok=True)
+        with open(ACCOUNTS_CACHE, "w") as fh:
+            json.dump({"at": time.time(), "dirs": dirs}, fh)
+    except Exception:
+        pass
+    return dirs
+
+
+def find_claude_accounts():
     """Config dirs (None = default) that have a Claude Code login."""
     found = [None] if read_credentials(None) else []
     for d in sorted(glob.glob(os.path.expanduser("~/.claude-*")) + glob.glob(os.path.expanduser("~/.config/claude*"))):
@@ -589,14 +612,15 @@ def render(data, popup=False, busy=False, docked=False):
     size = (len(body) + 2, max(visible_len(l) for l in body) + 4)
     if docked:
         body += ["", f"{DIM}r refresh   f float   q close{RESET}"]
-    elif size != _last_fit:
-        fit_rex_layer(*size)
-        _last_fit = size
+    fit_needed = not docked and size != _last_fit
     title = "Agent usage · updating…" if busy else "Agent usage"
     # Redraw in place: home, rewrite each line, clear the rest. No full-screen clear, so no blink.
     lines = [""] + ["  " + l for l in body]
     print(f"\033]2;{title}\007\033[?25l\033_Ga=d,q=2\033\\\033[H"
           + "\n".join(l + "\033[K" for l in lines) + "\033[J", end="", flush=True)
+    if fit_needed:                               # after drawing, so nothing waits on Rex
+        _last_fit = size
+        fit_rex_layer(*size)
 
 
 def rex_api(method, args):
@@ -762,7 +786,7 @@ def popup(claude_dirs=None):
     old = termios.tcgetattr(fd)
     anchor = arg_after("--from", "") or None
     result, worker = {}, None
-    state = {"docked": is_docked(), "last": 0.0}
+    state = {"docked": False, "last": 0.0}
 
     def show(busy=False):
         render(result.get("data") or cached_view(claude_dirs), popup=True, busy=busy,
@@ -782,7 +806,10 @@ def popup(claude_dirs=None):
     try:
         tty.setcbreak(fd)
         print(FOCUS_ON, end="", flush=True)
-        show(busy=True)
+        show(busy=True)                          # draw first, then ask Rex about the layout
+        state["docked"] = is_docked()
+        if state["docked"]:
+            show(busy=True)
         refresh(False)
         busy = True
         while True:
@@ -845,7 +872,7 @@ rex.action{
     local cmd = { %(bin)s, "--popup", "--from", ctx.block_id or "" }
     local layout = rex.layout.block{
       flavor  = "com.superlogical.terminal.shell",
-      options = { command = cmd },
+      options = { command = cmd, shell = "none" },   -- start directly: no shell startup
     }
     if agentmeter_style == "pane" and ctx.block_id then
       return rex.session.new_split{
@@ -1022,6 +1049,65 @@ def setup_claude(remove=False):
     print("New Claude Code sessions pick this up." if not remove else "Restart Claude Code sessions to hide it.")
 
 
+def ask(question, default=True, unattended=None):
+    """Yes/no question on the terminal. Works under `curl | sh` by reading /dev/tty.
+    With --yes the default is taken. With no terminal, `unattended` is (default if None)."""
+    if "--yes" in sys.argv or "-y" in sys.argv:
+        return default
+    try:
+        tty_in = open("/dev/tty")
+    except OSError:
+        return default if unattended is None else unattended
+    hint = "Y/n" if default else "y/N"
+    sys.stdout.write(f"  {question} [{hint}] ")
+    sys.stdout.flush()
+    answer = tty_in.readline().strip().lower()
+    tty_in.close()
+    return default if not answer else answer.startswith("y")
+
+
+def rex_installed():
+    return installed(["rex"])
+
+
+def rex_set_up():
+    path = rex_config_path()
+    return os.path.exists(path) and REX_BEGIN in open(path).read()
+
+
+def setup_all():
+    """One step after installing: find agents, then offer the Rex popup and the status line."""
+    print(f"\n  {BOLD}agentmeter setup{RESET}\n")
+    found = [name for aid, name, detect, _ in AGENTS if detect()]
+    print(f"  Agents found: {', '.join(found) if found else 'none yet (sign in to an agent first)'}\n")
+
+    if "--no-rex" in sys.argv:
+        pass
+    elif not rex_installed():
+        print(f"  {DIM}Rex not found, skipping the popup. Run `agentmeter setup-rex` after installing Rex.{RESET}")
+    elif ask(f"Add the Rex popup on {current_key(open(rex_config_path()).read()) if rex_set_up() else DEFAULT_KEY}?"):
+        print("  ", end="")
+        setup_rex(arg_after("--key", None))
+
+    if "--no-statusline" in sys.argv:
+        pass
+    elif not installed(["claude"], ["~/.claude.json"]):
+        print(f"  {DIM}Claude Code not found, skipping the status line.{RESET}")
+    elif ask("Show your limits in Claude Code's status line?", unattended=False):
+        if "--only" not in sys.argv and "statusline_only" not in prefs():
+            default_only = ["claude"] + (["codex"] if "Codex" in found else [])
+            sys.argv += ["--only", ",".join(default_only)]
+        setup_claude()
+
+    print(f"\n  {BOLD}Done.{RESET} Try it:")
+    if rex_set_up():
+        print(f"    In Rex, press {current_key(open(rex_config_path()).read())}")
+    if statusline_enabled():
+        print("    In Claude Code, start a new session to see the status line")
+    print("    In any terminal, run: agentmeter")
+    print(f"\n  Change anything later with `agentmeter shortcut`, `agentmeter style` or `agentmeter statusline`.\n")
+
+
 def arg_after(flag, default):
     return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv[:-1] else default
 
@@ -1030,6 +1116,8 @@ if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "--version":
         print(f"agentmeter {VERSION}")
+    elif cmd == "setup":
+        setup_all()
     elif cmd == "setup-rex":
         setup_rex(arg_after("--key", None))
     elif cmd == "style":
@@ -1085,3 +1173,5 @@ if __name__ == "__main__":
             print(json.dumps(data, indent=2))
         else:
             render(data)
+            if sys.stdout.isatty() and not rex_set_up() and not statusline_enabled():
+                print(f"  {DIM}Tip: run `agentmeter setup` to add the Rex popup and the Claude Code status line.{RESET}\n")

@@ -6,6 +6,7 @@
 #   AGENTMETER_BIN_DIR      where to put the command  (default: ~/.local/bin)
 #   AGENTMETER_KEY          Rex shortcut               (default: shift+cmd+u)
 #   AGENTMETER_NO_REX=1     skip the Rex popup setup
+#   AGENTMETER_NO_STATUSLINE=1  skip the Claude Code status line question
 #   AGENTMETER_UNINSTALL=1  remove agentmeter and its Rex popup
 set -eu
 
@@ -37,7 +38,9 @@ case ":$PATH:" in
   *) echo "  note: $BIN_DIR is not on your PATH; add it to run \`agentmeter\` directly." ;;
 esac
 
-if [ "${AGENTMETER_NO_REX:-}" != 1 ] && command -v rex >/dev/null 2>&1; then
-  printf "  "; if [ -n "${AGENTMETER_KEY:-}" ]; then "$BIN" setup-rex --key "$AGENTMETER_KEY"; else "$BIN" setup-rex; fi
-fi
-echo "  try it: agentmeter"
+# One setup step: asks about the Rex popup and the Claude Code status line.
+set --
+[ "${AGENTMETER_NO_REX:-}" = 1 ] && set -- "$@" --no-rex
+[ "${AGENTMETER_NO_STATUSLINE:-}" = 1 ] && set -- "$@" --no-statusline
+[ -n "${AGENTMETER_KEY:-}" ] && set -- "$@" --key "$AGENTMETER_KEY"
+"$BIN" setup "$@"

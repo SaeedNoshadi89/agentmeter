@@ -72,9 +72,18 @@ python3 -c "import json;p='$H/.claude/settings.json';d=json.load(open(p));d['sta
 o=$(run statusline on); [[ $o == *skipped* && $(python3 -c "import json;print(json.load(open('$H/.claude/settings.json'))['statusLine']['command'])") == my-own-line ]] && ok "won't replace someone's own status line" || no "no clobber" "$o"
 run statusline on --force >/dev/null; [[ $(python3 -c "import json;print(json.load(open('$H/.claude/settings.json'))['statusLine']['command'])") == *agentmeter* ]] && ok "--force replaces it" || no "--force" ""
 
+echo "setup (temp HOME, temp REX_CONFIG, no terminal)"
+H2="$T/home2"; mkdir -p "$H2/.claude"; echo '{}' > "$H2/.claude/settings.json"; R2="$T/init3.lua"; : > "$R2"
+o=$(HOME="$H2" REX_CONFIG="$R2" "$A" setup < /dev/null 2>&1)
+[[ $o == *"Agents found"* && $o == *"Done."* ]] && ok "setup runs and lists agents" || no setup "$o"
+[[ $(grep -c 'agentmeter >>>' "$R2") == 1 ]] && ok "setup adds the Rex popup" || no "setup rex" "$(cat $R2)"
+[[ $(HOME="$H2" "$A" statusline status) == off ]] && ok "setup without a terminal leaves Claude settings alone" || no "setup unattended" "$(HOME="$H2" "$A" statusline status)"
+HOME="$H2" REX_CONFIG="$R2" "$A" setup --yes >/dev/null 2>&1; [[ $(HOME="$H2" "$A" statusline status) == on* && $(grep -c 'agentmeter >>>' "$R2") == 1 ]] && ok "setup --yes turns on the status line, no duplicates" || no "setup --yes" "$(HOME="$H2" "$A" statusline status)"
+HOME="$H2" REX_CONFIG="$R2" "$A" statusline off >/dev/null; HOME="$H2" REX_CONFIG="$R2" "$A" setup --yes --no-statusline >/dev/null 2>&1; [[ $(HOME="$H2" "$A" statusline status) == off ]] && ok "setup --no-statusline" || no "--no-statusline" ""
+
 echo "installer (temp dir, temp REX_CONFIG)"
 export REX_CONFIG="$T/init2.lua"; : > "$REX_CONFIG"
-B="$T/bin"; o=$(AGENTMETER_BIN_DIR=$B AGENTMETER_NO_REX=1 sh "$(dirname "$A")/install.sh" 2>&1); [[ -x $B/agentmeter && $($B/agentmeter --version) == agentmeter* ]] && ok "install.sh installs" || no install "$o"
+B="$T/bin"; o=$(AGENTMETER_BIN_DIR=$B AGENTMETER_NO_REX=1 AGENTMETER_NO_STATUSLINE=1 sh "$(dirname "$A")/install.sh" < /dev/null 2>&1); [[ -x $B/agentmeter && $($B/agentmeter --version) == agentmeter* ]] && ok "install.sh installs" || no install "$o"
 o=$(AGENTMETER_BIN_DIR=$B AGENTMETER_UNINSTALL=1 sh "$(dirname "$A")/install.sh" 2>&1); [[ ! -e $B/agentmeter ]] && ok "install.sh uninstalls" || no uninstall "$o"
 
 unset REX_CONFIG

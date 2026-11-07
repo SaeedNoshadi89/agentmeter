@@ -11,6 +11,11 @@ agentmeter finds the agents installed on your machine and lists each one: Claude
 - **Four ways to see it:** a floating popup, a docked pane, Claude Code's status line, or plain terminal output
 - **One Python file**, nothing else to install
 
+```sh
+brew install SaeedNoshadi89/tap/agentmeter
+agentmeter setup
+```
+
 > ⭐ **If agentmeter helps you, please [star the repo](https://github.com/SaeedNoshadi89/agentmeter).** Stars help other people find it and bring `brew install agentmeter` without a tap closer.
 > **Issues and pull requests are very welcome.** Found a bug, want another agent supported, or have an idea? [Open an issue](https://github.com/SaeedNoshadi89/agentmeter/issues) or send a PR. See [Contributing](#contributing).
 
@@ -57,7 +62,11 @@ A line under Claude Code's prompt box, showing **the account that session uses**
 
 <img src="docs/statusline.png" alt="Claude Code status line" width="640">
 
-Turn it on with `agentmeter statusline on`. See [Status line](#status-line).
+When a limit runs low, it turns red and shows when it resets (here the 5-hour window is at 10% and resets in 39 minutes):
+
+<img src="docs/statusline-low.png" alt="Status line with a low 5-hour limit in red" width="520">
+
+Turn it on with `agentmeter statusline on`, or answer yes during `agentmeter setup`. See [Status line](#status-line).
 
 ### 4. Terminal
 
@@ -73,25 +82,17 @@ Run `agentmeter` in any terminal. `agentmeter --json` prints the same data for s
 - **At least one agent**, such as Claude Code, Codex or OpenCode, that you've signed in to.
 - **Optional:** [Rex](https://www.superlogical.com/rex) for the popup and pane, and Claude Code for the status line.
 
-### Step 1: install the command
+### Step 1: install
 
-Choose one method.
-
-**Homebrew** (recommended on macOS). Add the tap and trust it once; after that it installs and upgrades like any other formula.
-
-```sh
-brew tap SaeedNoshadi89/tap
-brew trust --formula saeednoshadi89/tap/agentmeter
-brew install agentmeter
-```
-
-Homebrew asks you to trust formulas from taps outside its main repository, which is what the `brew trust` line does. Or install with the full name, which trusts it for you in one step:
+**Homebrew** (recommended on macOS):
 
 ```sh
 brew install SaeedNoshadi89/tap/agentmeter
 ```
 
-**Install script.** This puts `agentmeter` in `~/.local/bin`, and also sets up the Rex popup if Rex is installed.
+This one line adds the tap and trusts it for you. Prefer the short name? Run `brew tap SaeedNoshadi89/tap` and `brew trust --formula saeednoshadi89/tap/agentmeter` once; after that, `brew install agentmeter` and `brew upgrade agentmeter` work.
+
+**Install script** (macOS or Linux). This installs and then runs setup for you, so it's the whole job in one command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/SaeedNoshadi89/agentmeter/main/install.sh | sh
@@ -112,36 +113,39 @@ The install script takes these options:
 | `AGENTMETER_BIN_DIR=/usr/local/bin` | Install somewhere other than `~/.local/bin` |
 | `AGENTMETER_KEY=alt+cmd+u` | Use a different Rex shortcut |
 | `AGENTMETER_NO_REX=1` | Don't set up the Rex popup |
+| `AGENTMETER_NO_STATUSLINE=1` | Don't ask about the Claude Code status line |
 | `AGENTMETER_UNINSTALL=1` | Remove the command and its Rex popup |
 
 Put the variable on the `sh` side of the pipe, for example `curl -fsSL …/install.sh | AGENTMETER_KEY=alt+cmd+u sh`.
 
-### Step 2: check that it works
+### Step 2: set up
 
 ```sh
-agentmeter --version
-agentmeter
+agentmeter setup
 ```
 
-The second command should list your agents. If something's missing, see [Troubleshooting](#troubleshooting).
+Setup lists the agents it found and asks two questions, both defaulting to yes:
 
-### Step 3: add the Rex popup (if you use Rex)
+```
+  agentmeter setup
 
-The install script already does this. With Homebrew, run:
+  Agents found: Claude Code, Codex, OpenCode
 
-```sh
-agentmeter setup-rex
+  Add the Rex popup on shift+cmd+u? [Y/n]
+  Show your limits in Claude Code's status line? [Y/n]
+
+  Done. Try it:
+    In Rex, press shift+cmd+u
+    In Claude Code, start a new session to see the status line
+    In any terminal, run: agentmeter
 ```
 
-Then press **Shift+Cmd+U** in Rex.
+- **Skip the questions** and accept both: `agentmeter setup --yes`.
+- **Skip a question:** add `--no-rex` or `--no-statusline`.
+- **Without Rex or Claude Code**, setup skips that question and says so.
+- **Run it again** any time; it never duplicates anything and keeps your earlier choices.
 
-### Step 4: turn on the Claude Code status line (optional)
-
-```sh
-agentmeter statusline on --only claude,codex
-```
-
-Start a new Claude Code session, or restart one with `claude --continue`, to see it.
+That's it. Press the shortcut in Rex, or run `agentmeter` in any terminal.
 
 ### Updating
 
