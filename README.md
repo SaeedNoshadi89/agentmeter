@@ -61,12 +61,25 @@ Set a variable on the `sh` side of the pipe, for example `curl -fsSL …/install
 
 ### Changing the shortcut
 
+The default shortcut is **Shift+Cmd+U**. To see or change it:
+
 ```sh
 agentmeter shortcut              # show the current one
 agentmeter shortcut alt+cmd+u    # change it
 ```
 
-Your choice is kept when you update or reinstall. Keys use Rex's format, such as `ctrl+shift+u` or `cmd+;`.
+Rex reloads straight away, so the new key works at once. If Rex rejects the key, your config is left unchanged and you'll see an error.
+
+You can also pick the key when you set up:
+
+```sh
+agentmeter setup-rex --key ctrl+shift+u
+curl -fsSL https://raw.githubusercontent.com/SaeedNoshadi89/agentmeter/main/install.sh | AGENTMETER_KEY=ctrl+shift+u sh
+```
+
+Your choice is kept when you update or reinstall. Running setup again without `--key` doesn't reset it.
+
+Keys use Rex's format: modifiers joined with `+`, such as `alt+cmd+u`, `ctrl+shift+u` or `cmd+;`. To check that a key isn't already used, run `rex keymap`.
 
 ## Usage
 
