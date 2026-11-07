@@ -293,8 +293,8 @@ def collect(fresh=False, claude_dirs=None):
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
 # Each tool's own mark where it has one: Claude Code's spark in Claude orange,
 # Codex CLI's prompt, Gemini's sparkle in Gemini blue.
-ICONS = {"claude": ("\033[38;2;217;119;87m", "✻ "), "codex": ("", ">_"),
-         "gemini": ("\033[38;2;71;150;227m", "✦ "), "opencode": ("", "▣ ")}
+ICONS = {"claude": ("\033[33m", "✻ "), "codex": ("", ">_"),   # theme colors only
+         "gemini": ("\033[34m", "✦ "), "opencode": ("", "▣ ")}
 
 
 ICON_SITES = {"claude": "claude.ai", "codex": "chatgpt.com", "opencode": "opencode.ai",
