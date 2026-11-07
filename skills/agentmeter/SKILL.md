@@ -36,7 +36,7 @@ This skill needs an agent that can run local commands, such as Claude Code or Co
 - **`unavailable`**: say that agent's numbers can't be read right now, and give the reason. If it mentions logging in, suggest the user run `claude` and sign in.
 - **Codex `from today 14:48 (… ago)`**: Codex only writes these numbers when it runs, so they can be older. Say how old.
 - **100% left with no reset time** means that window is unused or has started over. Just report it as 100% left; don't guess why.
-- **Blocked by the sandbox** (the output says so): AgentMeter needs to read local agent data and contact the usage services, which a read-only or offline sandbox stops. Ask the user to approve running the script outside the sandbox, or to allow network access, then run it again. In Codex CLI that means approving the command, or starting Codex with a sandbox that allows it.
+- **A sandbox note** (the output's last `note:` mentions a sandbox): give the numbers you have and pass the note on. In Codex's sandbox, Codex's own numbers are read directly, and the others come from AgentMeter's last check. For fresh numbers, ask the user to approve running the script outside the sandbox, or to run `agentmeter` in a normal terminal.
 - **No supported agents found**: say so. AgentMeter supports Claude Code, Codex and OpenCode, and lists other agents without numbers.
 
 ## Examples

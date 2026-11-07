@@ -77,6 +77,13 @@ ok("sandbox block is explained", "sandbox" in run([]))
 u.run_agentmeter = lambda binary, demo: ({"claude:default": {"agent": "claude", "label": "Claude Code",
     "account": "a@b.com", "error": "offline, retrying soon", "meters": []}}, None)
 ok("no network looks like a sandbox and says so", "note: AgentMeter was blocked" in run([]))
+u.run_agentmeter = lambda binary, demo: (FAKE, None)
+os.environ["CODEX_SANDBOX"] = "seatbelt"
+out = run([])
+ok("Codex sandbox: numbers are kept and the sandbox is explained", "55% left" in out and "Codex's sandbox" in out)
+u.run_agentmeter = lambda binary, demo: ({"codex": FAKE["codex"]}, None)
+ok("Codex sandbox: no note when only direct numbers are shown", "sandbox" not in run([]))
+del os.environ["CODEX_SANDBOX"]
 u.run_agentmeter = lambda binary, demo: ({}, None)
 ok("installed but no agents found", "found no supported agents" in run([]))
 

@@ -28,7 +28,7 @@ Usage:
 import glob, json, os, subprocess, sys, time, urllib.request
 from datetime import datetime, timezone
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 
 CACHE = os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
@@ -141,9 +141,10 @@ def claude_accounts():
 
 def find_claude_accounts():
     """Config dirs (None = default) that have a Claude Code login."""
-    found = [None] if read_credentials(None) else []
+    # A signed-in account in the config counts too: a sandbox can hide the Keychain from us.
+    found = [None] if read_credentials(None) or claude_account_id(None) else []
     for d in sorted(glob.glob(os.path.expanduser("~/.claude-*")) + glob.glob(os.path.expanduser("~/.config/claude*"))):
-        if os.path.isdir(d) and read_credentials(d):
+        if os.path.isdir(d) and (read_credentials(d) or claude_account_id(d)):
             found.append(d)
     return found or [None]
 
@@ -166,6 +167,8 @@ def claude_usage(token):
 def claude(cfg):
     raw = read_credentials(cfg)
     if not raw:
+        if claude_account_id(cfg):      # signed in according to the config, but the token is out of reach
+            raise FetchError("login can't be read here (sandbox, or signed out: run `claude`)", retry_in=60)
         raise RuntimeError("not logged in (run `claude`)")
     try:
         return claude_usage(json.loads(raw)["claudeAiOauth"]["accessToken"])

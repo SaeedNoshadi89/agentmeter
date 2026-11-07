@@ -11,6 +11,7 @@ Free and open source (MIT). Source: https://github.com/SaeedNoshadi89/agentmeter
   - macOS or Linux: `curl -fsSL https://raw.githubusercontent.com/SaeedNoshadi89/agentmeter/main/install.sh | sh`
 - **An agent that can run local commands**, such as Claude Code or Codex CLI. The skill runs AgentMeter on your computer and reports in chat, so it can't work in a chat-only app.
 - **`python3`**, which AgentMeter needs too.
+- **In Codex's sandbox**, Codex's own numbers work directly. Claude Code and other numbers come from AgentMeter's last check, marked with their time, because the sandbox blocks live checks. Approve running the command outside the sandbox for fresh ones.
 - **Rex is optional.** AgentMeter also has a popup for the Rex terminal, but this skill doesn't need it.
 
 ## What it reports

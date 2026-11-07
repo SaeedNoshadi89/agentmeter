@@ -36,6 +36,10 @@ INSTALL_HELP = [
 SANDBOX_HELP = ("AgentMeter was blocked by this agent's sandbox. It needs to read your agents' local "
                 "data and contact their usage services. Allow this command to run outside the "
                 "sandbox (approve it, or give the session network access), then ask again.")
+CODEX_SANDBOX_HELP = ("This is running inside Codex's sandbox, which blocks live checks. Codex's own "
+                      "numbers are read directly from its logs; the others are from AgentMeter's last "
+                      "check, if there was one. For fresh numbers, approve running this command outside the sandbox, or "
+                      "run agentmeter in a normal terminal.")
 OFFLINE = re.compile(r"offline|Operation not permitted|Permission", re.I)
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # Long opaque strings (tokens, keys, ids) and home-folder paths never reach the agent.
@@ -155,7 +159,7 @@ def build_report(data, only):
 def blocked(agents):
     """True when every agent failed to connect, which usually means a sandbox without network."""
     failed = [a for a in agents if a["freshness"] == "unavailable" or a["freshness"].startswith("stale")]
-    return bool(agents) and len(failed) == len([a for a in agents if a["agent"] != "Codex"]) and \
+    return bool(failed) and len(failed) == len([a for a in agents if a["agent"] != "Codex"]) and \
         all(OFFLINE.search(a["note"] or "") for a in failed)
 
 
@@ -206,7 +210,10 @@ def main():
         else:
             agents = build_report(data, only)
             report.update(status="ok", agents=agents)
-            if blocked(agents):
+            not_current = [a for a in agents if a["agent"] != "Codex" and not a["freshness"].startswith("current")]
+            if os.environ.get("CODEX_SANDBOX") and not_current:
+                report["hint"] = CODEX_SANDBOX_HELP
+            elif blocked(agents):
                 report["hint"] = SANDBOX_HELP
 
     if "--json" in sys.argv:
