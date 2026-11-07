@@ -503,9 +503,9 @@ def reset_text(ts):
     secs = ts - time.time()
     if secs < 86400:
         h, m = int(secs // 3600), int(secs % 3600 // 60)
-        return f"↻ {h}h {m:02d}m" if h else f"↻ {m}m"
+        return f"resets in {h}h {m:02d}m" if h else f"resets in {m}m"
     fmt = "%a %H:%M" if secs < 6 * 86400 else "%b %d"
-    return "↻ " + time.strftime(fmt, time.localtime(ts))
+    return "resets " + time.strftime(fmt, time.localtime(ts))
 
 
 def visible_len(text):
@@ -576,6 +576,18 @@ def rex_api(method, args):
     return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
 
 
+POPUP_BOUNDS = os.path.expanduser("~/.cache/agentmeter/popup-bounds.json")
+
+
+def save_popup_bounds(bounds):
+    try:
+        os.makedirs(os.path.dirname(POPUP_BOUNDS), exist_ok=True)
+        with open(POPUP_BOUNDS, "w") as fh:
+            json.dump([round(v, 4) for v in bounds], fh)
+    except Exception:
+        pass
+
+
 def fit_rex_layer(rows_needed, cols_needed):
     """Shrink the popup's floating layer to fit its content, centred in the window."""
     block = os.environ.get("REX_BLOCK")
@@ -592,6 +604,7 @@ def fit_rex_layer(rows_needed, cols_needed):
             _, _, w, h = layer["bounds"]
             cols, rows = os.get_terminal_size()
             if rows == rows_needed and abs(cols - cols_needed) <= 1:
+                save_popup_bounds(layer["bounds"])   # the shortcut opens at this size next time
                 return
             nw = min(0.95, w * cols_needed / cols)
             nh = min(0.95, h * rows_needed / rows)
@@ -627,6 +640,8 @@ def statusline():
         pass
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     mine = f"claude:{os.path.expanduser(cfg).rstrip('/') if cfg else 'default'}"
+    if "--demo" in sys.argv:
+        mine = "claude:personal"
     cache, now = load_cache(), time.time()
     view = cached_view()
     if any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
@@ -636,7 +651,8 @@ def statusline():
         parts = []
         for m in u.get("meters", []):
             label = SHORT.get(m["label"], m["label"])
-            reset = reset_text(m.get("resets_at")).replace("↻ ", "↻") if m["left"] < 50 else ""
+            reset = reset_text(m.get("resets_at")).replace("resets in ", "").replace("resets ", "")
+            reset = f"({reset})" if reset and m["left"] < 50 else ""
             parts.append(f"{DIM}{label}{RESET} {tone(m['left'])}{m['left']:.0f}%{RESET}"
                          + (f" {DIM}{reset}{RESET}" if reset else ""))
         return f" {DIM}·{RESET} ".join(parts)
@@ -724,6 +740,10 @@ def popup(claude_dirs=None):
         worker = threading.Thread(target=lambda: result.update(data=collect(fresh, claude_dirs)), daemon=True)
         worker.start()
 
+    import signal
+    resized = {"flag": False}
+    signal.signal(signal.SIGWINCH, lambda *_: resized.update(flag=True))   # redraw when the pane resizes
+
     try:
         tty.setcbreak(fd)
         print(FOCUS_ON, end="", flush=True)
@@ -734,6 +754,9 @@ def popup(claude_dirs=None):
             if busy and not worker.is_alive():
                 show()
                 busy = False
+            if resized["flag"]:
+                resized["flag"] = False
+                show(busy=busy)
             if state["docked"] and not busy and time.time() - state["last"] > CACHE_TTL:
                 show(busy=True)
                 refresh(False)
@@ -795,9 +818,18 @@ rex.action{
         direction = "horizontal", side = "after", ratio = 0.68, focus = true, layout = layout,
       }
     end
+    -- Open at the size the popup fitted itself to last time, so it doesn't jump.
+    local bounds = { 0.28, 0.22, 0.44, 0.5 }
+    local f = io.open((os.getenv("HOME") or "") .. "/.cache/agentmeter/popup-bounds.json")
+    if f then
+      local saved = {}
+      for n in f:read("*a"):gmatch("[%%d%%.]+") do saved[#saved + 1] = tonumber(n) end
+      f:close()
+      if #saved == 4 and saved[3] > 0.05 and saved[4] > 0.05 then bounds = saved end
+    end
     return rex.session.new_layer{
       session_id = ctx.session_id,
-      bounds = { 0.28, 0.22, 0.44, 0.5 },
+      bounds = bounds,
       focus  = true,
       layout = layout,
     }
