@@ -557,8 +557,10 @@ def render(data, popup=False, busy=False, docked=False):
         fit_rex_layer(*size)
         _last_fit = size
     title = "Agent usage · updating…" if busy else "Agent usage"
-    print(f"\033]2;{title}\007\033[?25l\033_Ga=d,q=2\033\\\033[H\033[2J\n", end="")
-    print("\n".join("  " + l for l in body), end="", flush=True)
+    # Redraw in place: home, rewrite each line, clear the rest. No full-screen clear, so no blink.
+    lines = [""] + ["  " + l for l in body]
+    print(f"\033]2;{title}\007\033[?25l\033_Ga=d,q=2\033\\\033[H"
+          + "\n".join(l + "\033[K" for l in lines) + "\033[J", end="", flush=True)
 
 
 def rex_api(method, args):
@@ -666,6 +668,18 @@ def my_layer():
     return None
 
 
+def focus_moved_away():
+    """After a focus-out report, confirm with Rex that another pane really has focus.
+    Moving a pane (dock/float) reports a brief out-and-in that must not close it."""
+    block = os.environ.get("REX_BLOCK")
+    time.sleep(0.25)
+    view = rex_api("session.view", {}) if block else None
+    for w in (view or {}).get("windows", []):
+        if any(b.get("block_id") == block for l in w.get("layers", []) for b in l.get("blocks", [])):
+            return w.get("focused_block_id") != block
+    return True
+
+
 def is_docked():
     layer = my_layer()
     return bool(layer) and layer.get("kind") == "tiled"
@@ -682,6 +696,7 @@ def undock():
     if os.environ.get("REX_BLOCK"):
         rex_api("session.float_block", {"block_id": os.environ["REX_BLOCK"],
                                         "bounds": [0.28, 0.22, 0.44, 0.5]})
+        rex_api("session.focus_block", {"block_id": os.environ["REX_BLOCK"]})
         _last_fit = None                          # refit the new floating layer
 
 
@@ -728,8 +743,10 @@ def popup(claude_dirs=None):
             if keys == b"\033[I":                          # gained focus
                 continue
             if b"\033[O" in keys:                          # lost focus: close only when floating
+                if keys.rfind(b"\033[I") > keys.rfind(b"\033[O"):
+                    continue                                # out-and-in from a layout change
                 state["docked"] = is_docked()
-                if state["docked"]:
+                if state["docked"] or not focus_moved_away():
                     continue
                 break
             if keys in (b"r", b"R") and not busy:
