@@ -38,6 +38,6 @@ case ":$PATH:" in
 esac
 
 if [ "${AGENTMETER_NO_REX:-}" != 1 ] && command -v rex >/dev/null 2>&1; then
-  printf '  '; "$BIN" setup-rex --key "${AGENTMETER_KEY:-shift+cmd+u}"
+  printf "  "; if [ -n "${AGENTMETER_KEY:-}" ]; then "$BIN" setup-rex --key "$AGENTMETER_KEY"; else "$BIN" setup-rex; fi
 fi
 echo "  try it: agentmeter"

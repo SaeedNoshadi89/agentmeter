@@ -12,7 +12,9 @@ Usage:
   agentmeter --claude-config DIR               one Claude account (its CLAUDE_CONFIG_DIR)
   agentmeter --pid PID                         the account of a running Claude Code process
   agentmeter setup-rex [--key shift+cmd+u]   add the popup to Rex's init.lua
+  agentmeter shortcut [KEY]                    show or change the popup's shortcut
   agentmeter remove-rex                      take it out again
+  agentmeter --no-icons                        text marks instead of the agents' icons
   agentmeter --version
 """
 import glob, json, os, subprocess, sys, time, urllib.request
@@ -275,12 +277,160 @@ ICONS = {"claude": ("\033[38;2;217;119;87m", "✻ "), "codex": ("", ">_"),
          "gemini": ("\033[38;2;71;150;227m", "✦ "), "opencode": ("", "▣ ")}
 
 
+ICON_SITES = {"claude": "claude.ai", "codex": "chatgpt.com", "opencode": "opencode.ai",
+              "gemini": "gemini.google.com", "cursor": "cursor.com", "amp": "ampcode.com",
+              "copilot": "github.com", "qwen": "qwen.ai", "crush": "charm.sh",
+              "droid": "factory.ai", "aider": "aider.chat"}
+ICON_DIR = os.path.expanduser("~/.cache/agentmeter/icons")
+
+
+def images_supported():
+    """Terminals that draw Kitty graphics: Rex, kitty, Ghostty, WezTerm."""
+    if "--no-icons" in sys.argv or not sys.stdout.isatty():
+        return False
+    return bool(os.environ.get("REX_SESSION") or os.environ.get("KITTY_WINDOW_ID")
+                or os.environ.get("TERM_PROGRAM") in ("ghostty", "WezTerm"))
+
+
+def icon_png(aid):
+    """The agent's site icon, downloaded once and cached. None if unavailable."""
+    site = ICON_SITES.get(aid)
+    if not site:
+        return None
+    path = os.path.join(ICON_DIR, f"{aid}.png")
+    if not os.path.exists(path):
+        try:
+            url = f"https://www.google.com/s2/favicons?domain={site}&sz=64"
+            png = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "agentmeter"}),
+                                         timeout=4).read()
+            if not png.startswith(b"\x89PNG"):
+                return None
+            os.makedirs(ICON_DIR, exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(png)
+        except Exception:
+            return None
+    round_path = os.path.join(ICON_DIR, f"{aid}.round.png")
+    if not os.path.exists(round_path):
+        try:
+            with open(round_path, "wb") as fh:
+                fh.write(round_icon(open(path, "rb").read()))
+        except Exception:
+            return open(path, "rb").read()
+    return open(round_path, "rb").read()
+
+
+# ---- round icons (stdlib only: tiny PNG decode/encode) --------------------
+def png_rgba(data):
+    """Decode a non-interlaced PNG into (width, height, flat RGBA list)."""
+    import struct, zlib
+    pos, idat, pal, trns = 8, b"", None, b""
+    while pos < len(data):
+        n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+        chunk = data[pos + 8:pos + 8 + n]
+        if kind == b"IHDR":
+            w, h, depth, ctype, _, _, interlace = struct.unpack(">IIBBBBB", chunk)
+        elif kind == b"PLTE":
+            pal = [tuple(chunk[i:i + 3]) for i in range(0, len(chunk), 3)]
+        elif kind == b"tRNS":
+            trns = chunk
+        elif kind == b"IDAT":
+            idat += chunk
+        pos += n + 12
+    if interlace or (depth != 8 and ctype != 3):
+        raise ValueError("unsupported PNG")
+    chans = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[ctype]
+    bpp = max(1, chans * depth // 8)
+    stride = (w * chans * depth + 7) // 8
+    raw, prev, rows = zlib.decompress(idat), bytearray(stride), []
+    for y in range(h):
+        f, line = raw[y * (stride + 1)], bytearray(raw[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
+        for i in range(stride):
+            a_, b_ = line[i - bpp] if i >= bpp else 0, prev[i]
+            c_ = prev[i - bpp] if i >= bpp else 0
+            if f == 1: line[i] = (line[i] + a_) & 255
+            elif f == 2: line[i] = (line[i] + b_) & 255
+            elif f == 3: line[i] = (line[i] + (a_ + b_) // 2) & 255
+            elif f == 4:
+                pa, pb, pc = abs(b_ - c_), abs(a_ - c_), abs(a_ + b_ - 2 * c_)
+                line[i] = (line[i] + (a_ if pa <= pb and pa <= pc else b_ if pb <= pc else c_)) & 255
+        rows.append(line)
+        prev = line
+    px = []
+    for line in rows:
+        for x in range(w):
+            if ctype == 3:
+                bit = x * depth
+                idx = (line[bit // 8] >> (8 - depth - bit % 8)) & ((1 << depth) - 1)
+                r, g, b = pal[idx]
+                px += [r, g, b, trns[idx] if idx < len(trns) else 255]
+            elif ctype == 6: px += line[x * 4:x * 4 + 4]
+            elif ctype == 2: px += list(line[x * 3:x * 3 + 3]) + [255]
+            elif ctype == 4: px += [line[x * 2]] * 3 + [line[x * 2 + 1]]
+            else: px += [line[x]] * 3 + [255]
+    return w, h, px
+
+
+def rgba_png(w, h, px):
+    import struct, zlib
+    raw = b"".join(b"\0" + bytes(px[y * w * 4:(y + 1) * w * 4]) for y in range(h))
+    def chunk(kind, body):
+        return struct.pack(">I", len(body)) + kind + body + struct.pack(">I", zlib.crc32(kind + body))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+def round_icon(png, size=64):
+    """Crop to an anti-aliased circle. Icons with see-through corners get a white disc behind them."""
+    w, h, src = png_rgba(png)
+    opaque = src[3] > 200 and src[(w * h - 1) * 4 + 3] > 200
+    scale = 1.0 if opaque else 0.68          # inset transparent logos inside the disc
+    out, r = [], size / 2
+    for y in range(size):
+        for x in range(size):
+            # coverage of the circle, sampled 4x per pixel for smooth edges
+            cover = sum(((x + dx) - r) ** 2 + ((y + dy) - r) ** 2 <= r * r
+                        for dx in (0.25, 0.75) for dy in (0.25, 0.75)) / 4
+            u = ((x + 0.5 - r) / scale + r) * w / size
+            v = ((y + 0.5 - r) / scale + r) * h / size
+            if 0 <= u < w and 0 <= v < h:
+                i = (int(v) * w + int(u)) * 4
+                sr, sg, sb, sa = src[i:i + 4]
+            else:
+                sr = sg = sb = sa = 0
+            if opaque:
+                pr, pg, pb, pa = sr, sg, sb, sa
+            else:                              # logo over white
+                k = sa / 255
+                pr, pg, pb = (round(c * k + 255 * (1 - k)) for c in (sr, sg, sb))
+                pa = 255
+            out += [pr, pg, pb, round(pa * cover)]
+    return rgba_png(size, size, out)
+
+
+def kitty_image(png, cols=3):
+    """Draw a PNG `cols` cells wide at the cursor, then step past it."""
+    import base64
+    data = base64.b64encode(png).decode()
+    chunks = [data[i:i + 4096] for i in range(0, len(data), 4096)]
+    out = ""
+    for i, c in enumerate(chunks):
+        # Width only, so the terminal keeps the icon round. C=1: cursor stays; q=2: no replies.
+        head = f"f=100,a=T,c={cols},Y=3,C=1,q=2," if i == 0 else "q=2,"
+        out += f"\033_G{head}m={int(i < len(chunks) - 1)};{c}\033\\"
+    return out + " " * (cols + 1)
+
+
 def icon(aid, muted=False):
+    if images_supported():
+        png = icon_png(aid)
+        if png:
+            return kitty_image(png)
     color, mark = ICONS.get(aid, ("", "◆ "))
-    return f"{DIM if muted else color}{BOLD}{mark}{RESET}"
+    return f"{DIM if muted else color}{BOLD}{mark}{RESET}  "
 
 
-GREEN, ORANGE, RED = "\033[32m", "\033[38;5;208m", "\033[31m"
+GREEN, ORANGE, RED = "\033[32m", "\033[33m", "\033[31m"  # theme colors: Rex draws its yellow slot as orange
 
 
 def tone(left):
@@ -309,7 +459,7 @@ def reset_text(ts):
 
 def visible_len(text):
     import re
-    return len(re.sub(r"\033\[[0-9;?]*[A-Za-z]", "", text))
+    return len(re.sub(r"\033_G.*?\033\\|\033\[[0-9;?]*[A-Za-z]", "", text))
 
 
 SHORT = {"5-hour": "5h", "Weekly": "week", "Monthly": "month", "Daily": "day", "Budget": "budget"}
@@ -325,12 +475,12 @@ def lines_for(data, bar_w):
         if "as_of" in u:
             title += f"   {DIM}as of {time.strftime('%H:%M', time.localtime(u['as_of']))}{RESET}"
         quiet = "error" in u or not u.get("meters")
-        out.append(f"{icon(aid, muted=quiet)} {title}")
+        out.append(f"{icon(aid, muted=quiet)}{title}")
         if "error" in u or u.get("note"):
-            out.append(f"   {DIM}{u.get('error') or u['note']}{RESET}")
+            out.append(f"    {DIM}{u.get('error') or u['note']}{RESET}")
         for m in u.get("meters", []):
             extra = "  ".join(x for x in (m.get("detail"), reset_text(m.get("resets_at"))) if x)
-            out.append(f"   {DIM}{SHORT.get(m['label'], m['label']):<6}{RESET}{bar(m, bar_w)}  "
+            out.append(f"    {DIM}{SHORT.get(m['label'], m['label']):<6}{RESET}{bar(m, bar_w)}  "
                        f"{tone(m['left'])}{m['left']:3.0f}%{RESET}  {DIM}{extra}{RESET}")
         out.append("")
     return out
@@ -347,7 +497,7 @@ def render(data, popup=False):
     while body and not body[-1]:
         body.pop()
     fit_rex_layer(len(body) + 2, max(visible_len(l) for l in body) + 4)
-    print("\033]2;Agent usage\007\033[?25l\033[H\033[2J\n", end="")
+    print("\033]2;Agent usage\007\033[?25l\033_Ga=d,q=2\033\\\033[H\033[2J\n", end="")
     print("\n".join("  " + l for l in body), end="", flush=True)
 
 
@@ -383,7 +533,7 @@ def fit_rex_layer(rows_needed, cols_needed):
             nw = min(0.95, w * cols_needed / cols)
             nh = min(0.95, h * rows_needed / rows)
             rex_api("session.resize_layer", {"layer_id": layer["layer_id"],
-                                             "bounds": [(1 - nw) / 2, (1 - nh) / 2.5, nw, nh]})
+                                             "bounds": [(1 - nw) / 2, (1 - nh) / 2, nw, nh]})
             time.sleep(0.12)
     except Exception:
         pass
@@ -423,16 +573,6 @@ rex.action{
   keywords = "claude codex limits quota usage",
   run = function(ctx, args)
     local cmd = { %(bin)s, "--popup" }
-    -- If the focused pane is running Claude Code, show that pane's account.
-    local proc = rex.block.call("com.superlogical.terminal", "process", { block_id = ctx.block_id })
-    local fg = proc and proc.foreground
-    if fg and fg.pid then
-      local id = ((fg.argv0 or "") .. " " .. (fg.invoked_path or "") .. " " .. (fg.path or "")):lower()
-      if id:find("claude", 1, true) then
-        table.insert(cmd, "--pid")
-        table.insert(cmd, tostring(math.floor(fg.pid)))
-      end
-    end
     return rex.session.new_layer{
       session_id = ctx.session_id,
       bounds = { 0.28, 0.22, 0.44, 0.5 },
@@ -474,9 +614,18 @@ def strip_block(text):
     return "".join(out).rstrip("\n") + "\n" if out else ""
 
 
+DEFAULT_KEY = "shift+cmd+u"
+
+
+def current_key(text):
+    m = re.search(r'rex\.bind\("([^"]+)", "agent_usage"\)', text)
+    return m.group(1) if m else None
+
+
 def setup_rex(key, remove=False):
     path = rex_config_path()
     old = open(path).read() if os.path.exists(path) else ""
+    key = key or current_key(old) or DEFAULT_KEY
     new = strip_block(old)
     if not remove:
         # The path this command was run as, e.g. /opt/homebrew/bin/agentmeter, not a versioned Cellar path.
@@ -504,7 +653,14 @@ if __name__ == "__main__":
     if cmd == "--version":
         print(f"agentmeter {VERSION}")
     elif cmd == "setup-rex":
-        setup_rex(arg_after("--key", "shift+cmd+u"))
+        setup_rex(arg_after("--key", None))
+    elif cmd == "shortcut":
+        if len(sys.argv) < 3:
+            path = rex_config_path()
+            key = current_key(open(path).read()) if os.path.exists(path) else None
+            print(key or "not set up (run `agentmeter setup-rex`)")
+        else:
+            setup_rex(sys.argv[2])
     elif cmd == "remove-rex":
         setup_rex(None, remove=True)
     elif cmd in ("-h", "--help"):

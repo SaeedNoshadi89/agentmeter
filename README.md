@@ -2,6 +2,10 @@
 
 See how much of your coding agents' usage limits is left, from the terminal or as a popup in [Rex](https://www.superlogical.com/rex). agentmeter finds the agents installed on your machine and lists each one: Claude Code and Codex with their **5-hour** and **weekly** limits, OpenCode with its provider's budget, and more.
 
+- **Every agent you have installed**, found automatically, each with its own icon
+- **Every Claude account**, side by side, each labelled with its email
+- **A popup in Rex** on a shortcut you choose, centred and sized to fit
+
 <img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="420">
 
 Each bar shows the share left. Every agent and every window uses the same colors:
@@ -9,8 +13,12 @@ Each bar shows the share left. Every agent and every window uses the same colors
 | Left | Color |
 | --- | --- |
 | 50% or more | green |
-| under 50% | orange |
+| under 50% | orange (your theme's yellow) |
 | under 30% | red |
+
+These are your terminal theme's own colors, and the popup uses your terminal font, so it matches your Rex theme.
+
+Each agent is shown with its own round icon. The icons are downloaded once from each agent's website, through Google's favicon service, and cached in `~/.cache/agentmeter/icons`. They appear in terminals that can show images: Rex, kitty, Ghostty and WezTerm. Elsewhere, or with `--no-icons`, a text mark is used instead, such as `✻` for Claude Code and `>_` for Codex.
 
 The Rex popup sizes itself to fit what it shows. Press **r** to refresh, or any other key to close it. `↻` marks when a limit resets.
 
@@ -46,6 +54,15 @@ Set a variable on the `sh` side of the pipe, for example `curl -fsSL …/install
 
 `agentmeter setup-rex [--key shift+cmd+u]` adds a **Show Agent Usage** action to `~/.config/rex/init.lua` and reloads Rex. It sits between `-- >>> agentmeter >>>` markers, so running it again replaces the old block instead of adding a second one. If Rex rejects the new config, your file is left as it was. `agentmeter remove-rex` takes the block out.
 
+### Changing the shortcut
+
+```sh
+agentmeter shortcut              # show the current one
+agentmeter shortcut alt+cmd+u    # change it
+```
+
+Your choice is kept when you update or reinstall. Keys use Rex's format, such as `ctrl+shift+u` or `cmd+;`.
+
 ## Usage
 
 ```sh
@@ -72,10 +89,19 @@ To add an agent, add a row to `AGENTS` in `agentmeter`. Each row needs a check f
 
 ## Several Claude accounts
 
-Claude Code keeps each login in a config folder: `~/.claude` by default, or whatever `CLAUDE_CONFIG_DIR` points to. agentmeter finds every logged-in folder (`~/.claude`, `~/.claude-*` and `~/.config/claude*`) and labels each one with its account email.
+If you use more than one Claude account, for example work and personal, agentmeter shows **each one separately**, labelled with its email:
 
-- **Rex popup:** if the pane you're in is running Claude Code, the popup shows only that pane's account. It reads the `CLAUDE_CONFIG_DIR` of the `claude` process in that pane. From any other pane, it shows every account.
-- **Terminal:** `agentmeter` shows every account. `agentmeter --claude-config ~/.claude-work` shows one.
+```
+✻ Claude Code  you@work.com
+   5h    ━━━━━━━━━━━━━━━━  100%
+   week  ━━────────────────   15%  ↻ Tue 09:30
+
+✻ Claude Code  you@personal.com
+   5h    ━━━━━━━━━━━──────   68%  ↻ 1h 27m
+   week  ━━━━━━━━━━━━━━━╸   95%  ↻ Nov 14
+```
+
+Claude Code keeps each login in a config folder: `~/.claude` by default, or whatever `CLAUDE_CONFIG_DIR` points to. agentmeter finds every folder that has a login (`~/.claude`, `~/.claude-*` and `~/.config/claude*`) and reads the email from it. The terminal view and the Rex popup both show every account. To see just one, run `agentmeter --claude-config ~/.claude-work`.
 
 ## Where the numbers come from
 
@@ -92,7 +118,7 @@ Notes:
 
 ## Privacy
 
-Each token or key is sent only to its own service: Claude tokens to `api.anthropic.com` and OpenRouter keys to `openrouter.ai`. agentmeter never logs or stores them, and never sends them anywhere else. Nothing else leaves your machine.
+Each token or key is sent only to its own service: Claude tokens to `api.anthropic.com` and OpenRouter keys to `openrouter.ai`. agentmeter never logs or stores them, and never sends them anywhere else. Apart from the icon downloads, nothing else leaves your machine.
 
 ## License
 
