@@ -807,6 +807,7 @@ def popup(claude_dirs=None):
         tty.setcbreak(fd)
         print(FOCUS_ON, end="", flush=True)
         show(busy=True)                          # draw first, then ask Rex about the layout
+        refresh_rex_block_if_outdated()
         state["docked"] = is_docked()
         if state["docked"]:
             show(busy=True)
@@ -863,6 +864,7 @@ REX_BEGIN, REX_END = "-- >>> agentmeter >>>", "-- <<< agentmeter <<<"
 REX_SNIPPET = """\
 -- agentmeter: usage limits left for your coding agents.
 -- Managed by agentmeter (`agentmeter setup-rex`, `shortcut`, `style`, `remove-rex`).
+-- agentmeter version: %(version)s
 local agentmeter_style = %(style)s   -- "float" or "pane"
 rex.action{
   name     = "agent_usage",
@@ -948,7 +950,7 @@ def current_style(text):
     return m.group(1) if m else None
 
 
-def setup_rex(key, remove=False, style=None):
+def setup_rex(key, remove=False, style=None, quiet=False):
     path = rex_config_path()
     old = open(path).read() if os.path.exists(path) else ""
     key = key or current_key(old) or DEFAULT_KEY
@@ -957,7 +959,8 @@ def setup_rex(key, remove=False, style=None):
     if not remove:
         # The path this command was run as, e.g. /opt/homebrew/bin/agentmeter, not a versioned Cellar path.
         bin_path = os.path.abspath(sys.argv[0])
-        block = REX_SNIPPET % {"bin": json.dumps(bin_path), "key": json.dumps(key), "style": json.dumps(style)}
+        block = REX_SNIPPET % {"bin": json.dumps(bin_path), "key": json.dumps(key), "style": json.dumps(style),
+                               "version": VERSION}
         new = (new + "\n" if new else "") + f"{REX_BEGIN}\n{block}{REX_END}\n"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
@@ -967,6 +970,8 @@ def setup_rex(key, remove=False, style=None):
             fh.write(old)
         sys.exit("Rex rejected the config; init.lua was left unchanged. Run `rex config check`.")
     rex("config", "reload")
+    if quiet:
+        return
     print(f"Removed the agentmeter popup from {path}." if remove
           else f"Rex popup ready: press {key} (or run `rex do agent_usage`). Opens as: {style}.")
 
@@ -1068,6 +1073,18 @@ def ask(question, default=True, unattended=None):
 
 def rex_installed():
     return installed(["rex"])
+
+
+def refresh_rex_block_if_outdated():
+    """After an upgrade, rewrite our Rex block once so it gets the new version's improvements.
+    Keeps the user's shortcut and style."""
+    path = rex_config_path()
+    try:
+        text = open(path).read()
+    except OSError:
+        return
+    if REX_BEGIN in text and f"-- agentmeter version: {VERSION}" not in text:
+        setup_rex(None, quiet=True)
 
 
 def rex_set_up():
