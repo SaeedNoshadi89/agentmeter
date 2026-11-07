@@ -4,7 +4,8 @@ See how much of your coding agents' usage limits is left, from the terminal or a
 
 - **Every agent you have installed**, found automatically, each with its own icon
 - **Every Claude account**, side by side, each labelled with its email
-- **A popup in Rex** on a shortcut you choose, centred and sized to fit
+- **A popup in Rex** on a shortcut you choose, centred and sized to fit. You can also dock it as a pane.
+- **Your limits in Claude Code's status line**, showing the account that session uses
 
 <img src="docs/screenshot.png" alt="agentmeter popup in Rex" width="420">
 
@@ -59,6 +60,27 @@ Set a variable on the `sh` side of the pipe, for example `curl -fsSL …/install
 
 `agentmeter setup-rex [--key shift+cmd+u]` adds a **Show Agent Usage** action to `~/.config/rex/init.lua` and reloads Rex. It sits between `-- >>> agentmeter >>>` markers, so running it again replaces the old block instead of adding a second one. If Rex rejects the new config, your file is left as it was. `agentmeter remove-rex` takes the block out.
 
+### Floating or docked
+
+The popup opens floating and closes when you press a key or click outside it.
+
+| In the popup | Does |
+| --- | --- |
+| `d` | dock it as a pane beside the one you were in |
+| `f` | float it again (when docked) |
+| `r` | refresh now |
+| `q` / `Esc` | close (when docked, other keys and clicks don't close it) |
+
+A docked pane refreshes itself every minute. Rex's own **Float Pane** shortcut (Alt+Cmd+Enter) works too.
+
+To make the shortcut always open it docked:
+
+```sh
+agentmeter style pane     # open as a docked pane
+agentmeter style float    # back to the floating popup (default)
+agentmeter style          # show the current style
+```
+
 ### Changing the shortcut
 
 The default shortcut is **Shift+Cmd+U**. To see or change it:
@@ -81,6 +103,23 @@ Your choice is kept when you update or reinstall. Running setup again without `-
 
 Keys use Rex's format: modifiers joined with `+`, such as `alt+cmd+u`, `ctrl+shift+u` or `cmd+;`. To check that a key isn't already used, run `rex keymap`.
 
+## Claude Code status line
+
+agentmeter can also show your limits in Claude Code's footer, under the prompt:
+
+```
+✻ 5h 49% ↻1h 11m · week 93%   >_ 5h 99% · week 49% ↻Thu 15:25   ▣ month 100%
+```
+
+The Claude part shows **the account that session is using**. With two accounts, each session shows its own numbers. Reset times appear only for windows under 50%.
+
+```sh
+agentmeter setup-claude     # turn it on for every Claude config folder
+agentmeter remove-claude    # turn it off
+```
+
+This sets `statusLine` in each `settings.json` and saves a backup as `settings.json.bak`. A folder that already has a different status line is left alone. The status line reads cached numbers only, so it takes about 80 ms. Numbers older than a minute are refreshed in the background.
+
 ## Usage
 
 ```sh
@@ -92,6 +131,9 @@ agentmeter --demo                     # made-up accounts and numbers, for screen
 agentmeter --popup                    # the popup view: r refreshes, any other key closes
 agentmeter setup-rex | remove-rex     # add or remove the Rex popup
 agentmeter shortcut [KEY]             # show or change the popup's shortcut
+agentmeter style [float|pane]         # open the Rex view floating or docked
+agentmeter statusline                 # one line for Claude Code's status line
+agentmeter setup-claude | remove-claude   # turn that status line on or off
 agentmeter --version
 ```
 

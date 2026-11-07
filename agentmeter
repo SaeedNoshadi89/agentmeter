@@ -13,6 +13,9 @@ Usage:
   agentmeter --pid PID                         the account of a running Claude Code process
   agentmeter setup-rex [--key shift+cmd+u]   add the popup to Rex's init.lua
   agentmeter shortcut [KEY]                    show or change the popup's shortcut
+  agentmeter style [float|pane]                open the Rex view floating or docked as a pane
+  agentmeter statusline                        one line for Claude Code's statusLine setting
+  agentmeter setup-claude | remove-claude      turn that status line on or off
   agentmeter remove-rex                      take it out again
   agentmeter --no-icons                        text marks instead of the agents' icons
   agentmeter --demo [--popup]                  made-up accounts and numbers, for screenshots
@@ -258,29 +261,54 @@ def demo_data():
     }
 
 
-def collect(fresh=False, claude_dirs=None):
-    """Usage per entry, in display order. Each entry is cached for CACHE_TTL."""
-    if "--demo" in sys.argv:
-        return demo_data()
+def load_cache():
     try:
         cache = json.load(open(CACHE))
-        cache = cache if isinstance(cache, dict) and "data" not in cache else {}
+        return cache if isinstance(cache, dict) and "data" not in cache else {}
     except Exception:
-        cache = {}
-    data, now = {}, time.time()
-    for key, aid, label, account, fn in jobs_for(claude_dirs):
+        return {}
+
+
+def cached_view(claude_dirs=None):
+    """Last known numbers for every entry, however old; "loading…" where there are none. Instant."""
+    if "--demo" in sys.argv:
+        return demo_data()
+    cache, data = load_cache(), {}
+    for key, aid, label, account, _ in jobs_for(claude_dirs):
+        hit = cache.get(key)
+        data[key] = (hit["data"] if hit and "agent" in hit["data"]
+                     else {"agent": aid, "label": label, "account": account, "meters": [], "note": "loading…"})
+    return data
+
+
+def collect(fresh=False, claude_dirs=None):
+    """Usage per entry, in display order. Entries older than CACHE_TTL are fetched in parallel."""
+    if "--demo" in sys.argv:
+        return demo_data()
+    from concurrent.futures import ThreadPoolExecutor
+    cache, now = load_cache(), time.time()
+    jobs = jobs_for(claude_dirs)
+
+    def run(job):
+        key, aid, label, account, fn = job
         hit = cache.get(key)
         if not fresh and hit and now - hit["at"] < CACHE_TTL and "agent" in hit["data"]:
-            data[key] = hit["data"]
-            continue
+            return key, hit["data"], False
         try:
             v = fn()
             v["meters"] = [m for m in v.get("meters", []) if m]
         except Exception as e:
             v = {"error": str(e)}
         v.update(agent=aid, label=label, account=account)
-        cache[key] = {"at": now, "data": v}
+        return key, v, True
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(run, jobs))
+    data = {}
+    for key, v, new in results:
         data[key] = v
+        if new:
+            cache[key] = {"at": now, "data": v}
     os.makedirs(os.path.dirname(CACHE), exist_ok=True)
     with open(CACHE, "w") as fh:
         json.dump(cache, fh)
@@ -506,7 +534,11 @@ def lines_for(data, bar_w):
     return out
 
 
-def render(data, popup=False):
+_last_fit = None
+
+
+def render(data, popup=False, busy=False, docked=False):
+    global _last_fit
     import shutil
     if not popup:
         cols = shutil.get_terminal_size((80, 24)).columns
@@ -516,8 +548,14 @@ def render(data, popup=False):
     body = lines_for(data, 16)
     while body and not body[-1]:
         body.pop()
-    fit_rex_layer(len(body) + 2, max(visible_len(l) for l in body) + 4)
-    print("\033]2;Agent usage\007\033[?25l\033_Ga=d,q=2\033\\\033[H\033[2J\n", end="")
+    size = (len(body) + 2, max(visible_len(l) for l in body) + 4)
+    if docked:
+        body += ["", f"{DIM}r refresh   f float   q close{RESET}"]
+    elif size != _last_fit:
+        fit_rex_layer(*size)
+        _last_fit = size
+    title = "Agent usage · updating…" if busy else "Agent usage"
+    print(f"\033]2;{title}\007\033[?25l\033_Ga=d,q=2\033\\\033[H\033[2J\n", end="")
     print("\n".join("  " + l for l in body), end="", flush=True)
 
 
@@ -559,48 +597,186 @@ def fit_rex_layer(rows_needed, cols_needed):
         pass
 
 
-def read_key():
-    import termios, tty
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
+# ---- Claude Code status line ---------------------------------------------
+def refresh_in_background():
+    """Start `agentmeter --refresh` detached, unless one started in the last CACHE_TTL."""
+    stamp = CACHE + ".refreshing"
     try:
-        tty.setraw(fd)
-        return os.read(fd, 1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if time.time() - os.path.getmtime(stamp) < CACHE_TTL:
+            return
+    except OSError:
+        pass
+    open(stamp, "w").close()
+    subprocess.Popen([sys.executable, os.path.abspath(sys.argv[0]), "--refresh"],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def statusline():
+    """One line for Claude Code's statusLine: this session's account first, then other agents.
+
+    Reads only the cache, so it's instant; stale numbers are refreshed in the background."""
+    try:
+        sys.stdin.read()          # Claude Code sends session JSON; not needed
+    except Exception:
+        pass
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    mine = f"claude:{os.path.expanduser(cfg).rstrip('/') if cfg else 'default'}"
+    cache, now = load_cache(), time.time()
+    view = cached_view()
+    if any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
+        refresh_in_background()
+
+    def short(u):
+        parts = []
+        for m in u.get("meters", []):
+            label = SHORT.get(m["label"], m["label"])
+            reset = reset_text(m.get("resets_at")).replace("↻ ", "↻") if m["left"] < 50 else ""
+            parts.append(f"{DIM}{label}{RESET} {tone(m['left'])}{m['left']:.0f}%{RESET}"
+                         + (f" {DIM}{reset}{RESET}" if reset else ""))
+        return f" {DIM}·{RESET} ".join(parts)
+
+    out = []
+    for key in sorted(view, key=lambda k: k != mine):
+        u = view[key]
+        if key.startswith("claude:") and key != mine and mine in view:
+            continue                                    # other Claude accounts: only in the popup
+        color, mark = ICONS.get(u.get("agent"), ("", "◆ "))
+        body = short(u) or f"{DIM}{u.get('note') or u.get('error') or ''}{RESET}"
+        out.append(f"{color}{mark.strip()}{RESET} {body}")
+    print("   ".join(out))
+
+
+FOCUS_ON, FOCUS_OFF = "\033[?1004h", "\033[?1004l"  # terminal reports focus in (ESC[I) / out (ESC[O)
+
+
+def my_layer():
+    """The Rex layer holding this pane, or None outside Rex."""
+    block = os.environ.get("REX_BLOCK")
+    view = rex_api("session.view", {}) if block else None
+    for w in (view or {}).get("windows", []):
+        for layer in w.get("layers", []):
+            if any(b.get("block_id") == block for b in layer.get("blocks", [])):
+                return layer
+    return None
+
+
+def is_docked():
+    layer = my_layer()
+    return bool(layer) and layer.get("kind") == "tiled"
+
+
+def dock(anchor):
+    if anchor and os.environ.get("REX_BLOCK"):
+        rex_api("session.move_block", {"block_id": os.environ["REX_BLOCK"], "anchor_block_id": anchor,
+                                       "direction": "horizontal", "side": "after", "ratio": 0.68})
+
+
+def undock():
+    global _last_fit
+    if os.environ.get("REX_BLOCK"):
+        rex_api("session.float_block", {"block_id": os.environ["REX_BLOCK"],
+                                        "bounds": [0.28, 0.22, 0.44, 0.5]})
+        _last_fit = None                          # refit the new floating layer
 
 
 def popup(claude_dirs=None):
+    """Draw at once from the cache and refresh in the background.
+
+    Floating: any key or a click outside closes it; d docks it as a pane.
+    Docked:   stays open and refreshes every minute; f floats it, q or Esc closes it."""
+    import select, termios, threading, tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    anchor = arg_after("--from", "") or None
+    result, worker = {}, None
+    state = {"docked": is_docked(), "last": 0.0}
+
+    def show(busy=False):
+        render(result.get("data") or cached_view(claude_dirs), popup=True, busy=busy,
+               docked=state["docked"])
+
+    def refresh(fresh):
+        nonlocal worker
+        result.clear()
+        state["last"] = time.time()
+        worker = threading.Thread(target=lambda: result.update(data=collect(fresh, claude_dirs)), daemon=True)
+        worker.start()
+
     try:
-        data = collect(claude_dirs=claude_dirs)
+        tty.setcbreak(fd)
+        print(FOCUS_ON, end="", flush=True)
+        show(busy=True)
+        refresh(False)
+        busy = True
         while True:
-            render(data, popup=True)
-            if read_key() not in (b"r", b"R"):
+            if busy and not worker.is_alive():
+                show()
+                busy = False
+            if state["docked"] and not busy and time.time() - state["last"] > CACHE_TTL:
+                show(busy=True)
+                refresh(False)
+                busy = True
+            if not select.select([fd], [], [], 0.05)[0]:
+                continue
+            keys = os.read(fd, 64)
+            if keys == b"\033[I":                          # gained focus
+                continue
+            if b"\033[O" in keys:                          # lost focus: close only when floating
+                state["docked"] = is_docked()
+                if state["docked"]:
+                    continue
                 break
-            data = collect(fresh=True, claude_dirs=claude_dirs)
+            if keys in (b"r", b"R") and not busy:
+                show(busy=True)
+                refresh(True)
+                busy = True
+            elif keys in (b"d", b"D") and not state["docked"]:
+                dock(anchor)
+                state["docked"] = is_docked()
+                show(busy=busy)
+            elif keys in (b"f", b"F") and state["docked"]:
+                undock()
+                state["docked"] = is_docked()
+                show(busy=busy)
+            elif state["docked"] and keys not in (b"q", b"Q", b"\033"):
+                continue                                    # docked: only q / Esc close it
+            else:
+                break
+    except KeyboardInterrupt:
+        pass
     finally:
-        print("\033[?25h", end="", flush=True)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        print(FOCUS_OFF + "\033[?25h", end="", flush=True)
 
 
 # ---- Rex integration -----------------------------------------------------
 REX_BEGIN, REX_END = "-- >>> agentmeter >>>", "-- <<< agentmeter <<<"
 REX_SNIPPET = """\
--- agentmeter: popup with Claude Code / Codex 5h + weekly usage remaining.
--- Managed by `agentmeter setup-rex` / `agentmeter remove-rex`.
+-- agentmeter: usage limits left for your coding agents.
+-- Managed by agentmeter (`agentmeter setup-rex`, `shortcut`, `style`, `remove-rex`).
+local agentmeter_style = %(style)s   -- "float" or "pane"
 rex.action{
   name     = "agent_usage",
   title    = "Show Agent Usage",
   keywords = "claude codex limits quota usage",
   run = function(ctx, args)
-    local cmd = { %(bin)s, "--popup" }
+    local cmd = { %(bin)s, "--popup", "--from", ctx.block_id or "" }
+    local layout = rex.layout.block{
+      flavor  = "com.superlogical.terminal.shell",
+      options = { command = cmd },
+    }
+    if agentmeter_style == "pane" and ctx.block_id then
+      return rex.session.new_split{
+        session_id = ctx.session_id, anchor_id = ctx.block_id,
+        direction = "horizontal", side = "after", ratio = 0.68, focus = true, layout = layout,
+      }
+    end
     return rex.session.new_layer{
       session_id = ctx.session_id,
       bounds = { 0.28, 0.22, 0.44, 0.5 },
       focus  = true,
-      layout = rex.layout.block{
-        flavor  = "com.superlogical.terminal.shell",
-        options = { command = cmd },
-      },
+      layout = layout,
     }
   end,
 }
@@ -642,15 +818,21 @@ def current_key(text):
     return m.group(1) if m else None
 
 
-def setup_rex(key, remove=False):
+def current_style(text):
+    m = re.search(r'local agentmeter_style = "(float|pane)"', text)
+    return m.group(1) if m else None
+
+
+def setup_rex(key, remove=False, style=None):
     path = rex_config_path()
     old = open(path).read() if os.path.exists(path) else ""
     key = key or current_key(old) or DEFAULT_KEY
+    style = style or current_style(old) or "float"
     new = strip_block(old)
     if not remove:
         # The path this command was run as, e.g. /opt/homebrew/bin/agentmeter, not a versioned Cellar path.
         bin_path = os.path.abspath(sys.argv[0])
-        block = REX_SNIPPET % {"bin": json.dumps(bin_path), "key": json.dumps(key)}
+        block = REX_SNIPPET % {"bin": json.dumps(bin_path), "key": json.dumps(key), "style": json.dumps(style)}
         new = (new + "\n" if new else "") + f"{REX_BEGIN}\n{block}{REX_END}\n"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as fh:
@@ -661,7 +843,38 @@ def setup_rex(key, remove=False):
         sys.exit("Rex rejected the config; init.lua was left unchanged. Run `rex config check`.")
     rex("config", "reload")
     print(f"Removed the agentmeter popup from {path}." if remove
-          else f"Rex popup ready: press {key} (or run `rex do agent_usage`).")
+          else f"Rex popup ready: press {key} (or run `rex do agent_usage`). Opens as: {style}.")
+
+
+def setup_claude(remove=False):
+    """Add (or remove) `agentmeter statusline` in every Claude Code config folder's settings.json."""
+    command = f"{os.path.abspath(sys.argv[0])} statusline"
+    for cfg in claude_accounts():
+        path = os.path.join(cfg or os.path.expanduser("~/.claude"), "settings.json")
+        try:
+            settings = json.load(open(path)) if os.path.exists(path) else {}
+        except Exception:
+            print(f"skipped {path}: not valid JSON")
+            continue
+        current = (settings.get("statusLine") or {}).get("command", "")
+        if remove:
+            if "agentmeter" not in current:
+                continue
+            settings.pop("statusLine")
+            note = "removed"
+        elif current and "agentmeter" not in current:
+            print(f"skipped {path}: it already has a status line ({current})")
+            continue
+        else:
+            settings["statusLine"] = {"type": "command", "command": command, "padding": 0}
+            note = "status line on"
+        if os.path.exists(path):
+            with open(path + ".bak", "w") as fh:
+                fh.write(open(path).read())
+        with open(path, "w") as fh:
+            json.dump(settings, fh, indent=2)
+            fh.write("\n")
+        print(f"{note}: {path}")
 
 
 def arg_after(flag, default):
@@ -674,6 +887,23 @@ if __name__ == "__main__":
         print(f"agentmeter {VERSION}")
     elif cmd == "setup-rex":
         setup_rex(arg_after("--key", None))
+    elif cmd == "style":
+        if len(sys.argv) < 3 or sys.argv[2] not in ("float", "pane"):
+            path = rex_config_path()
+            current = current_style(open(path).read()) if os.path.exists(path) else None
+            print(current or "float")
+            if len(sys.argv) >= 3:
+                sys.exit("usage: agentmeter style [float|pane]")
+        else:
+            setup_rex(None, style=sys.argv[2])
+    elif cmd == "setup-claude":
+        setup_claude()
+    elif cmd == "remove-claude":
+        setup_claude(remove=True)
+    elif cmd == "statusline":
+        statusline()
+    elif cmd == "--refresh":
+        collect(fresh=True)
     elif cmd == "shortcut":
         if len(sys.argv) < 3:
             path = rex_config_path()
