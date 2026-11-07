@@ -15,6 +15,7 @@ Usage:
   agentmeter shortcut [KEY]                    show or change the popup's shortcut
   agentmeter remove-rex                      take it out again
   agentmeter --no-icons                        text marks instead of the agents' icons
+  agentmeter --demo [--popup]                  made-up accounts and numbers, for screenshots
   agentmeter --version
 """
 import glob, json, os, subprocess, sys, time, urllib.request
@@ -240,8 +241,27 @@ def jobs_for(claude_dirs):
 
 
 # ---- collect + cache -----------------------------------------------------
+def demo_data():
+    """Made-up accounts and numbers, for screenshots (--demo)."""
+    now, h, d = time.time(), 3600, 86400
+    def m(label, left, resets, detail=None):
+        return meter(label, 100 - left, now + resets if resets else None, detail)
+    return {
+        "claude:work": {"agent": "claude", "label": "Claude Code", "account": "work@example.com",
+                        "meters": [m("5-hour", 100, 0), m("Weekly", 22, 2 * d + 5 * h)]},
+        "claude:personal": {"agent": "claude", "label": "Claude Code", "account": "personal@example.com",
+                            "meters": [m("5-hour", 64, 1 * h + 40 * 60), m("Weekly", 88, 6 * d + 3 * h)]},
+        "codex": {"agent": "codex", "label": "Codex", "account": None,
+                  "meters": [m("5-hour", 91, 3 * h + 12 * 60), m("Weekly", 41, 4 * d + 2 * h)]},
+        "opencode:openrouter": {"agent": "opencode", "label": "OpenCode", "account": "via OpenRouter",
+                                "meters": [m("Monthly", 76, 24 * d, "$38 of $50")]},
+    }
+
+
 def collect(fresh=False, claude_dirs=None):
     """Usage per entry, in display order. Each entry is cached for CACHE_TTL."""
+    if "--demo" in sys.argv:
+        return demo_data()
     try:
         cache = json.load(open(CACHE))
         cache = cache if isinstance(cache, dict) and "data" not in cache else {}

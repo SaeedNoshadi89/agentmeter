@@ -70,6 +70,7 @@ agentmeter                            # every agent and account
 agentmeter --json                     # machine-readable output
 agentmeter --claude-config ~/.claude-work   # one Claude account
 agentmeter --no-icons                 # text marks instead of icons
+agentmeter --demo                     # made-up accounts and numbers, for screenshots
 agentmeter --popup                    # the popup view: r refreshes, any other key closes
 agentmeter setup-rex | remove-rex     # add or remove the Rex popup
 agentmeter shortcut [KEY]             # show or change the popup's shortcut
