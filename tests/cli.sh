@@ -6,6 +6,19 @@
 A="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; T=$(mktemp -d); pass=0; fail=0
 REAL_REX="${XDG_CONFIG_HOME:-$HOME/.config}/rex/init.lua"
 before=$(cat "$REAL_REX" 2>/dev/null)
+# Use a private copy of the numbers, marked as fresh, so tests never call the usage services
+# (they rate-limit quickly) and never change the real cache.
+export AGENTMETER_CACHE="$T/cache.json"
+python3 - "$AGENTMETER_CACHE" <<'PY'
+import json, os, sys, time
+try:
+    c = json.load(open(os.path.expanduser("~/.cache/agentmeter.json")))
+except Exception:
+    c = {}
+for v in c.values():
+    v["at"] = time.time(); v.pop("retry_at", None)
+json.dump(c, open(sys.argv[1], "w"))
+PY
 ok(){ printf '  ok    %s\n' "$1"; pass=$((pass+1)); }
 no(){ printf '  FAIL  %s\n        %s\n' "$1" "$2"; fail=$((fail+1)); }
 t(){ name="$1"; shift; out=$("$@" 2>&1); code=$?; }
@@ -21,6 +34,12 @@ t n "$A" --no-icons; [[ $code == 0 && $(echo "$out"|strip) == *"✻"* ]] && ok "
 t dm "$A" --demo; [[ $(echo "$out"|strip) == *work@example.com* && $(echo "$out"|strip) == *personal@example.com* ]] && ok "--demo shows made-up accounts" || no --demo "$out"
 t dj "$A" --demo --json; echo "$out" | python3 -c 'import json,sys;json.load(sys.stdin)' && ok "--demo --json is valid" || no "--demo --json" "$out"
 [[ "$(echo "$out")" != *gmail* ]] && ok "--demo contains no real emails" || no "--demo privacy" "found gmail"
+
+echo "numbers from Claude Code's status line data"
+SL='{"rate_limits":{"five_hour":{"used_percentage":40,"resets_at":'$(( $(date +%s) + 3600 ))'},"seven_day":{"used_percentage":75,"resets_at":'$(( $(date +%s) + 86400 ))'}}}'
+o=$(echo "$SL" | env -u CLAUDE_CONFIG_DIR "$A" statusline --only claude | strip); [[ $o == *"5h 60%"* && $o == *"week 25%"* ]] && ok "status line uses Claude Code's numbers ($o)" || no "status line data" "$o"
+python3 -c "import json,os;d=json.load(open(os.environ['AGENTMETER_CACHE']));e=[v for k,v in d.items() if k.startswith('claude:')][0]['data'];assert e['meters'][0]['left']==60 and e.get('checked_at')" && ok "those numbers are saved for the other views" || no "saved numbers" ""
+s=$("$A" --json | python3 -c "import json,sys;d=json.load(sys.stdin);print([v for k,v in d.items() if k.startswith('claude:')][0]['meters'][0]['left'])"); [[ $s == 60.0 ]] && ok "other views show them without a network call" || no "other views" "$s"
 
 echo "accounts"
 t c1 "$A" --claude-config "$HOME/.claude-personal" --json; n=$(echo "$out" | python3 -c 'import json,sys;print(sum(k.startswith("claude:") for k in json.load(sys.stdin)))'); [[ $n == 1 ]] && ok "--claude-config picks one account" || no --claude-config "$n entries"

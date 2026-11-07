@@ -146,7 +146,13 @@ def build_report(data, only):
             freshness = f"from {local_time(entry['as_of'])} ({human_delta(age)} ago)"
             note = "Codex only updates these numbers when it runs." if agent_id == "codex" else None
         elif limits:
-            freshness = "current (checked within the last minute)"
+            age = now - entry["checked_at"] if entry.get("checked_at") else 0
+            if age < 60:
+                freshness = "current (checked within the last minute)"
+            elif age < 900:
+                freshness = f"current (checked {human_delta(age)} ago)"
+            else:
+                freshness = f"from {local_time(entry['checked_at'])} ({human_delta(age)} ago)"
             note = None
         else:
             freshness = "no limits reported"

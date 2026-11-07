@@ -24,7 +24,7 @@ This skill needs an agent that can run local commands, such as Claude Code or Co
 3. Reply in this format, keeping it short:
 
    - One line per limit: agent, limit, **percent left**, and when it resets, for example "Claude Code, 5-hour limit: **64% left**, resets today 16:30 (in 1h 39m)".
-   - The `data:` freshness for each agent, in plain words. Say "current" when it was checked within the last minute.
+   - The `data:` freshness for each agent, in plain words. Say how recently it was checked when the output gives that, for example "current, checked 3m ago".
    - Pass on any `note:` line.
    - If any limit is under 30% left, mention it first.
    - With several Claude accounts, keep the script's labels ("account 1 of 2"). Never ask for or guess emails.

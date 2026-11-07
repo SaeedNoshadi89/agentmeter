@@ -30,8 +30,9 @@ from datetime import datetime, timezone
 
 VERSION = "0.3.3"
 
-CACHE = os.path.expanduser("~/.cache/agentmeter.json")
+CACHE = os.environ.get("AGENTMETER_CACHE") or os.path.expanduser("~/.cache/agentmeter.json")
 CACHE_TTL = 60
+CLAUDE_TTL = 300              # Claude's usage service rate-limits quickly, so ask it rarely
 
 
 def meter(label, used, resets_at=None, detail=None):
@@ -55,7 +56,7 @@ class FetchError(RuntimeError):
         self.login, self.retry_in = login, retry_in
 
 
-RATE_LIMIT_BACKOFF = 300      # seconds to wait after a 429 when the server doesn't say
+RATE_LIMIT_BACKOFF = 300      # first wait after a 429; doubles on each repeat, up to an hour
 
 
 def http_json(url, headers):
@@ -67,10 +68,12 @@ def http_json(url, headers):
             raise FetchError("login expired", login=True)
         if e.code == 429:
             try:
-                wait = int(e.headers.get("Retry-After") or RATE_LIMIT_BACKOFF)
+                wait = int(e.headers.get("Retry-After") or 0)
             except ValueError:
-                wait = RATE_LIMIT_BACKOFF
-            raise FetchError("rate limited, retrying soon", retry_in=max(60, wait))
+                wait = 0
+            err = FetchError("rate limited, retrying soon", retry_in=max(60, wait))
+            err.rate_limited = True
+            raise err
         raise FetchError(f"service error {e.code}, retrying soon", retry_in=120)
     except (urllib.error.URLError, TimeoutError, OSError):
         raise FetchError("offline, retrying soon", retry_in=60)
@@ -335,6 +338,26 @@ def load_cache():
         return {}
 
 
+def ttl_for(key):
+    return CLAUDE_TTL if key.startswith("claude:") else CACHE_TTL
+
+
+def save_cache(cache):
+    """Save atomically, dropping leftovers. A read-only sandbox can't save: carry on without it."""
+    now = time.time()
+    keep = {k: v for k, v in cache.items()
+            if not (k.startswith("claude:/") and not os.path.isdir(k[len("claude:"):]))
+            and not ("error" in v.get("data", {}) and now - v.get("at", 0) > 86400)}
+    try:
+        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
+        tmp = f"{CACHE}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(keep, fh)
+        os.replace(tmp, CACHE)
+    except OSError:
+        pass
+
+
 def cached_view(claude_dirs=None):
     """Last known numbers for every entry, however old; "loading…" where there are none. Instant."""
     if "--demo" in sys.argv:
@@ -359,26 +382,31 @@ def collect(fresh=False, claude_dirs=None):
         key, aid, label, account, fn = job
         hit = cache.get(key)
         usable = hit and "agent" in hit["data"]
+        reset_passed = usable and any(m.get("resets_at") and m["resets_at"] <= now
+                                      for m in hit["data"].get("meters", []))
         if usable and hit.get("retry_at"):
             if now < hit["retry_at"]:                         # backing off after an error,
                 return key, hit, False                        # even when asked to refresh
-        elif usable and not fresh and now - hit["at"] < CACHE_TTL:
+        elif usable and not fresh and not reset_passed and now - hit["at"] < ttl_for(key):
             return key, hit, False
         try:
             v = fn()
             v["meters"] = [m for m in v.get("meters", []) if m]
-            v.update(agent=aid, label=label, account=account)
+            v.update(agent=aid, label=label, account=account, checked_at=now)
             return key, {"at": now, "data": v, "good_at": now}, True
         except Exception as e:
             retry_in = getattr(e, "retry_in", None) or CACHE_TTL
+            fails = (hit.get("fails", 0) + 1) if hit else 1
+            if getattr(e, "rate_limited", False):
+                retry_in = max(retry_in, min(3600, RATE_LIMIT_BACKOFF * 2 ** (fails - 1)))
             last_good = hit and hit["data"].get("meters") and "error" not in hit["data"]
             if last_good:
                 # Keep showing the last good numbers, marked with their time, and note the problem.
                 v = dict(hit["data"], stale=str(e), as_of=hit.get("good_at", hit["at"]))
                 return key, {"at": now, "data": v, "good_at": hit.get("good_at", hit["at"]),
-                             "retry_at": now + retry_in}, True
+                             "retry_at": now + retry_in, "fails": fails}, True
             v = {"error": str(e), "agent": aid, "label": label, "account": account}
-            return key, {"at": now, "data": v, "retry_at": now + retry_in}, True
+            return key, {"at": now, "data": v, "retry_at": now + retry_in, "fails": fails}, True
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(run, jobs))
@@ -387,12 +415,7 @@ def collect(fresh=False, claude_dirs=None):
         data[key] = entry["data"]
         if new:
             cache[key] = entry
-    try:                                   # a read-only sandbox can't save the cache: carry on
-        os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-        with open(CACHE, "w") as fh:
-            json.dump(cache, fh)
-    except OSError:
-        pass
+    save_cache(cache)
     return data
 
 
@@ -722,14 +745,42 @@ def refresh_in_background():
                      start_new_session=True)
 
 
+def use_claude_code_limits(payload, key, cfg, view, cache, now):
+    """Take this session's limits from Claude Code's status line data, and save them."""
+    limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+    if not isinstance(limits, dict):
+        return
+    old = {m.get("label"): m for m in (view.get(key) or {}).get("meters", [])}
+    meters, got = [], False
+    for field, label in (("five_hour", "5-hour"), ("seven_day", "Weekly")):
+        w = limits.get(field)
+        if isinstance(w, dict) and isinstance(w.get("used_percentage"), (int, float)):
+            meters.append(meter(label, w["used_percentage"], w.get("resets_at")))
+            got = True
+        elif label in old:
+            meters.append(old[label])         # Claude Code can omit a window; keep what we had
+    if not got:
+        return
+    data = {"meters": meters, "agent": "claude", "label": "Claude Code",
+            "account": claude_email(cfg), "checked_at": now}
+    view[key] = data
+    previous = cache.get(key) or {}
+    same = [m["left"] for m in previous.get("data", {}).get("meters", [])] == [m["left"] for m in meters]
+    cache[key] = {"at": now, "data": data, "good_at": now}
+    if not same or now - previous.get("at", 0) > 30 or previous.get("retry_at"):   # avoid needless writes
+        save_cache(cache)
+
+
 def statusline():
     """One line for Claude Code's statusLine: this session's account first, then other agents.
 
-    Reads only the cache, so it's instant; stale numbers are refreshed in the background."""
+    Claude Code sends this session's rate limits on stdin, so those need no network call and
+    are saved for the other views. Everything else comes from the cache, refreshed in the
+    background, so this stays instant."""
     try:
-        sys.stdin.read()          # Claude Code sends session JSON; not needed
+        payload = json.loads(sys.stdin.read() or "{}")
     except Exception:
-        pass
+        payload = {}
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     mine = f"claude:{os.path.expanduser(cfg).rstrip('/') if cfg else 'default'}"
     if "--demo" in sys.argv:
@@ -740,9 +791,12 @@ def statusline():
         email = claude_email(os.path.expanduser(cfg).rstrip("/") if cfg else None)
         mine = next((k for k, u in view.items() if k.startswith("claude:") and email
                      and u.get("account") == email), mine)
+    if "--demo" not in sys.argv:
+        use_claude_code_limits(payload, mine, os.path.expanduser(cfg).rstrip("/") if cfg else None,
+                               view, cache, now)
     reset_passed = any(m.get("resets_at") and m["resets_at"] <= now
                        for u in view.values() for m in u.get("meters", []))
-    if reset_passed or any(now - (cache.get(k) or {}).get("at", 0) > CACHE_TTL for k in view):
+    if reset_passed or any(now - (cache.get(k) or {}).get("at", 0) > ttl_for(k) for k in view):
         refresh_in_background()
 
     def short(u):
@@ -1203,7 +1257,7 @@ if __name__ == "__main__":
         else:
             statusline()            # called by Claude Code: print the line
     elif cmd == "--refresh":
-        collect(fresh=True)
+        collect()                # background refresh: never forces a check before it's due
     elif cmd == "shortcut":
         if len(sys.argv) < 3:
             path = rex_config_path()

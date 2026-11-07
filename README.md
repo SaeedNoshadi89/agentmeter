@@ -240,7 +240,7 @@ In Rex, you can also search the command palette (Cmd+P) for **Toggle Agent Usage
 | `~/.config/rex/init.lua` | The Rex action and shortcut, between `-- >>> agentmeter >>>` markers. `setup-rex`, `shortcut` and `style` rewrite only this block. |
 | `<Claude config folder>/settings.json` | The `statusLine` entry, when the status line is on |
 | `~/.config/agentmeter/prefs.json` | Your status line agent choice |
-| `~/.cache/agentmeter.json` | The last numbers, reused for 60 seconds |
+| `~/.cache/agentmeter.json` | The last numbers, with when each was checked |
 | `~/.cache/agentmeter/icons/` | The downloaded agent icons |
 
 ### Resetting everything to defaults
@@ -302,11 +302,12 @@ Claude Code keeps each login in a config folder: `~/.claude` by default, or what
 | Codex | The last `rate_limits` entry in `~/.codex/sessions/**/rollout-*.jsonl`. This is read locally, with no network call. |
 
 **How fresh the numbers are:**
-- Numbers are reused for 60 seconds, then fetched again. All agents are fetched at the same time.
-- The popup shows the last numbers at once and updates in place. The docked pane refreshes every minute. The status line refreshes in the background when its numbers are over a minute old.
+- **In Claude Code's status line**, Claude's numbers come straight from Claude Code with no network call (for Pro, Max and Ultra subscribers, after a session's first reply), and are saved for the popup, pane and skill.
+- Otherwise Claude's usage service is asked at most every 5 minutes, because it rate-limits quickly. Other agents are checked every minute at most. All are fetched at the same time.
+- The popup shows the last numbers at once and updates in place. The docked pane refreshes every minute. The status line refreshes the other agents in the background.
 - **Codex** only updates its numbers when it runs, so they are as fresh as your last Codex turn. If a window's reset time has passed, it's shown as 100% left.
 - **Claude's usage check is undocumented** and may change.
-- **If a check fails**, for example "rate limited" when the service is asked too often, agentmeter keeps showing the last good numbers, marked "as of" with the time and reason. After a rate limit it waits 5 minutes, or as long as the service asks, before trying that account again.
+- **If a check fails**, for example "rate limited" when the service is asked too often, agentmeter keeps showing the last good numbers, marked "as of" with the time and reason. After a rate limit it waits 5 minutes, then 10, 20 and so on up to an hour if it keeps happening, or longer if the service asks, before trying that account again. Using Claude Code with the status line on gives fresh numbers meanwhile.
 
 ## Privacy
 
@@ -352,7 +353,8 @@ To work on it:
 git clone https://github.com/SaeedNoshadi89/agentmeter.git
 cd agentmeter
 ./agentmeter --demo          # try changes with made-up data
-tests/cli.sh ./agentmeter    # run the CLI tests (your real config is never changed)
+tests/cli.sh ./agentmeter    # run the CLI tests (no real config changes, no usage service calls)
+python3 tests/cache.py       # run the cache and back-off tests (fake data)
 python3 tests/skill.py       # run the skill tests (fake data, no logins)
 ./install.sh                 # install your local copy
 ```
